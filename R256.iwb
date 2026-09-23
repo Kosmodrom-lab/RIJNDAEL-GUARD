@@ -1,0 +1,3374 @@
+/* 
+ * Rijndael Guard - Native GDI+ Skinned Engine (3-Panel Viewport Stage)
+ * Target Environment: IWBasic 2.5 + Native GDI+ Flat API + Win32 ZLIB
+ * Filename: R256.iwb
+ */
+
+AUTODEFINE "Off"
+
+$INCLUDE "windowssdk.inc"
+$INCLUDE "gdiplus.inc"
+
+' Link against standard static/import zlib library
+$USE "zlib.lib"
+
+' ===============================================================================
+' ZLIB 1.2.x DLL EXPORTS & STRUCTURES
+' ===============================================================================
+TYPE z_stream
+    POINTER next_in
+    INT     avail_in
+    INT     total_in
+    POINTER next_out
+    INT     avail_out
+    INT     total_out
+    POINTER msg
+    POINTER state
+    POINTER zalloc
+    POINTER zfree
+    POINTER opaque
+    INT     data_type
+    INT     adler
+    INT     reserved
+ENDTYPE
+
+CONST Z_OK            = 0
+CONST Z_STREAM_END    = 1
+CONST Z_NO_FLUSH      = 0
+CONST Z_FINISH        = 4
+CONST Z_DEFLATED      = 8
+CONST MAX_WBITS       = 15
+
+' ===============================================================================
+' ZLIB 1.2.x DLL EXPORTS (Strict IWBasic DECLARE CDECL Syntax)
+' ===============================================================================
+DECLARE CDECL IMPORT, deflateInit2_ ALIAS "deflateInit2_"(strm AS POINTER, level AS INT, method AS INT, windowBits AS INT, memLevel AS INT, strategy AS INT, version AS POINTER, stream_size AS INT), INT
+DECLARE CDECL IMPORT, deflate(strm AS POINTER, flush AS INT), INT
+DECLARE CDECL IMPORT, deflateEnd(strm AS POINTER), INT
+' ===============================================================================
+' ZLIB EXTERN DECLARATIONS
+' ===============================================================================
+DECLARE CDECL EXTERN gzopen(path AS STRING, mode AS STRING), INT
+DECLARE CDECL EXTERN gzwrite(gzFile AS INT, buf AS POINTER, length AS INT), INT
+DECLARE CDECL EXTERN gzread(gzFile AS INT, buf AS POINTER, length AS INT), INT
+DECLARE CDECL EXTERN gzclose(gzFile AS INT), INT
+DECLARE CDECL EXTERN gzflush(gzFile AS INT, flush AS INT), INT
+' Win32 API Import Alias (Resolves collision with IWBasic LINE command)
+DECLARE IMPORT, LineToWin32 ALIAS LineTo(hdc AS UINT, x AS INT, y AS INT), INT
+' Unique alias to avoid any language keyword collision
+DECLARE IMPORT, Win32ShowWindow ALIAS ShowWindow(hwnd AS UINT, nCmdShow AS INT), INT
+
+' ===============================================================================
+' CONSTANTS, CONTROL IDS & VIEWPORT STAGE DEFINITIONS
+' ===============================================================================
+CONST NCOLS = 8
+CONST NKEYS = 8
+CONST BLOCKBYTES = 32
+CONST KEYBYTES = 32
+CONST ROUNDS = 14
+
+' GUI Control IDs
+CONST ID_FILE_EDIT     = 11
+CONST ID_ZIPFIRST_CHK  = 15
+CONST ID_PASS_EDIT     = 21
+CONST ID_SHOWPASS_CHK  = 31
+
+' Viewport Panel Identifiers
+CONST PAGE_ABOUT = 0
+CONST PAGE_MAIN  = 1
+CONST PAGE_HELP  = 2
+
+' Viewport Stage Geometry
+CONST VIEWPORT_Y      = 65
+CONST VIEWPORT_WIDTH  = 440
+CONST VIEWPORT_HEIGHT = 278
+
+' Win32 API Custom Constants
+CONST INVALID_FILE_ATTRIBUTES = -1
+
+' RGB Color Constants for Hybrid GDI/GDI+ Renderer
+CONST RGB_BG_DARK     = 0x170F0B    ' Deep Slate Obsidian (BGR)
+CONST RGB_HEADER_BG   = 0x2C1C15    ' Top Banner Glass (BGR)
+CONST RGB_EDIT_BG     = 0x2C1C15    ' Dark Input Field Fill (BGR)
+CONST RGB_CYAN_ACCENT = 0xF8BD38    ' Cyber Cyan Accent (BGR)
+CONST RGB_GOLD_ACCENT = 0x20A5DA    ' Goldenrod Accent (BGR)
+CONST RGB_GREEN_BTN   = 0x81B910    ' Protect Green (BGR)
+CONST RGB_PANEL_BORDER= 0x3B291E    ' Subdued Border Lines (BGR)
+CONST RGB_TEXT_WHITE  = 0xFCFAF8    ' Clean White (BGR)
+CONST RGB_TEXT_MUTED  = 0xB8A394    ' Slate Muted (BGR)
+CONST RGB_ALERT_RED   = 0x2626DC    ' Flashing Alert Red (BGR)
+CONST RGB_BTN_DISABLED= 0x505050    ' Disabled State Dark Grey (BGR)
+
+' ARGB Color Constants for GDI+ Linear Gradients & Rounded Controls (0xAARRGGBB)
+CONST ARGB_CYAN_GLOW  = 0xFF38BDF8
+CONST ARGB_GOLD_BTN   = 0xFFDAA520
+CONST ARGB_HEADER_BG  = 0xFF151C2C
+CONST ARGB_EDIT_BG    = 0xFF151C2C
+CONST ARGB_FOOTER_TOP = 0xFF1E1510
+CONST ARGB_FOOTER_BOT = 0xFF120C08
+CONST ARGB_GREEN_BTN  = 0xFF10B981
+CONST ARGB_TEXT_WHITE = 0xFFF8FAFC
+CONST ARGB_SCANLINE   = 0x12000000  ' Soft semi-transparent black scanline overlay
+CONST ARGB_SHADOW_COLOR = 0x50000000' Subtle alpha drop shadow
+CONST ARGB_BTN_DISABLED = 0xFF353535' Disabled Button ARGB
+
+' ZLIB Constants
+CONST Z_SYNC_FLUSH = 2
+
+' Buffer allocation to 1 MB (1,048,576 bytes)
+CONST STREAM_BUF_SIZE = 1048576
+
+' ===============================================================================
+' GDI+ & WIN32 STRUCTURES
+' ===============================================================================
+TYPE GdiplusStartupInput
+    INT GdiplusVersion
+    POINTER DebugEventCallback
+    INT SuppressBackgroundThread
+    INT SuppressExternalCodecs
+ENDTYPE
+
+TYPE wRECT
+    INT left
+    INT top
+    INT right
+    INT bottom
+ENDTYPE
+
+TYPE SIZESTRUCT
+    INT cx
+    INT cy
+ENDTYPE
+
+TYPE PAINTSTRUCT
+    INT hdc
+    INT fErase
+    wRECT rcPaint
+    INT fRestore
+    INT fIncUpdate
+    CHAR rgbReserved[32]
+ENDTYPE
+
+TYPE LARGE_INTEGER
+    INT LowPart
+    INT HighPart
+ENDTYPE
+
+TYPE THREAD_ARGS
+    STRING password
+    INT encryptMode
+ENDTYPE
+
+' ===============================================================================
+' INTERNAL PROGRAM SUBROUTINE DECLARATIONS
+' ===============================================================================
+DECLARE Handler(), INT
+DECLARE CompressFileGzWin32(STRING srcFile, STRING outFile), INT
+DECLARE ExpandFileGzWin32(STRING gzFile, STRING outFile), INT
+DECLARE GetFileSize64(hFile AS INT), DOUBLE
+DECLARE HasSufficientDiskSpace(filePath AS STRING, bytesNeeded AS DOUBLE), INT
+DECLARE FastShredFileWin32(STRING filePath, DOUBLE totalBytes)
+DECLARE StartWorkerThread(STRING password, INT encryptMode)
+DECLARE CheckFileStatusAndMarker(STRING filePath)
+DECLARE InitAES_Engine(), INT
+DECLARE GenerateTables()
+DECLARE xtime(bVal AS INT), INT
+DECLARE KeySched()
+DECLARE CipherEngine()
+DECLARE TestCipherInversion(), INT
+DECLARE GetFileNameOnly(fullPath AS STRING), STRING
+DECLARE IsSystemPath(fPath AS STRING), INT
+DECLARE LogAction(msg AS STRING)
+DECLARE SaveLogBufferToDisk()
+DECLARE LoadSettings()
+DECLARE SaveSettings(lastDir AS STRING)
+DECLARE ProcessFileThreaded(password AS STRING, encryptMode AS INT)
+DECLARE RenderGDIPlusUI(hdc AS INT)
+DECLARE RenderAboutPanel(hdc AS INT)
+DECLARE RenderHelpPanel(hdc AS INT)
+DECLARE RenderCustomScrollbar(memDC AS UINT, gfx AS POINTER)
+DECLARE SlideViewportToPage(INT targetPage)
+DECLARE DrawGdiPlusButton(gfx AS POINTER, x AS FLOAT, y AS FLOAT, w AS FLOAT, h AS FLOAT, r AS FLOAT, bgClr AS UINT, borderClr AS UINT, textClr AS UINT, btnText AS STRING, hFont AS UINT, memDC AS UINT)
+DECLARE InitGDIPlus(), INT
+DECLARE ShutdownGDIPlus()
+DECLARE WipeBuffer(buf AS POINTER, size AS INT)
+DECLARE StretchKey(password AS STRING, outKeyBuf AS POINTER)
+DECLARE SubclassProc(hwnd AS UINT, uMsg AS UINT, wp AS UINT, lp AS UINT), INT
+DECLARE EditSubclassProc(hwnd AS UINT, uMsg AS UINT, wp AS UINT, lp AS UINT), INT
+DECLARE StripEditBorders(ctrlId AS INT)
+
+' ===============================================================================
+' UNIFIED ENCAPSULATED APPLICATION STATE STRUCTURE
+' ===============================================================================
+TYPE APP_STATE
+    WINDOW win
+
+	 ' Window Position Tracking (for INI persistence)
+    INT winX
+    INT winY
+
+    ' Stage Viewport Panel Offsets & Tracking
+    INT activePage      ' 0 = About, 1 = Main (Default), 2 = Help
+    INT isAnimating     ' Transition lock flag
+    INT stageX          ' Current horizontal stage offset X
+    
+    ' Heap Allocated Memory Pointers
+    POINTER pPwrTab
+    POINTER pLogTab
+    POINTER pSBox
+    POINTER pKeyArray
+    POINTER pCFBBuf
+    POINTER pDropBuf
+    POINTER pLogBuffer
+
+    ' Memory Size & Tracking
+    INT logBufSize
+    INT logBufUsed
+    INT gdiToken
+    INT gdiRefCount
+    INT isProcessing
+    INT hasZlibDll
+    INT isProtectedMarker
+
+    ' Win32 Handles & Old WndProcs
+    UINT pOldWndProc
+    UINT pOldFileEditProc
+    UINT pOldPassEditProc
+    UINT hEditBrush
+    UINT hDarkBrush
+    UINT hEditFont
+
+    ' Interactive UI State & Visual Flags
+    INT hoverBtn     ' 0=None, 1=Browse, 2=Protect, 3=Restore
+    INT hoverLink    ' 0=None, 1=Help, 2=Mail, 3=About
+    INT focusedEdit  ' 0=None, 1=File Edit, 2=Pass Edit
+    INT progressPos  ' 0 to 100 percentage
+    INT alertFlash   ' 1 = Draw Red Alert Marquee, 0 = Normal Marquee
+    
+    STRING statusMsg
+    STRING iniPath
+    STRING logPath
+
+    ' Interactive Bounding Rectangles
+    wRECT rcLinkHelp
+    wRECT rcLinkMail
+    wRECT rcLinkAbout
+
+	 ' Custom Help Viewport Scroll State
+    INT scrollY         ' Active vertical scroll offset in pixels (0 to maxScrollY)
+    INT maxScrollY      ' Maximum scrollable height (Content Height - Viewport Height)
+    INT isDraggingThumb ' 1 = User is holding and dragging the scrollbar thumb
+    INT dragStartMouseY ' Mouse Y coordinate when thumb drag initiated
+    INT dragStartScroll ' Scroll offset when thumb drag initiated
+    wRECT rcThumb       ' Active bounding box of the rendered thumb
+
+	 ' Help screen
+    POINTER pGpBookIcon
+	 STRING htmlBuf[4000]
+    STRING tokenBuf[256]
+
+	 ' About Scroller
+	 INT aboutScrollY ' Vertical offset for About marquee scroller
+    STRING aboutText[1024] ' Clean heap allocation for static terminal string
+	 POINTER pGpAboutLogo
+
+
+	 INT hasAESNI        ' Hardware detection status
+ENDTYPE
+
+' A global symbol for a large buffer and threaded file processing
+GLOBAL INT g_aesArgs[5]
+
+' Marquee Credits Array (20 Lines)
+GLOBAL STRING g_credits[20]
+GLOBAL INT g_creditsCount
+
+' Global Encapsulated Application State Instance
+APP_STATE g_app
+THREAD_ARGS g_ThreadData
+
+' ===============================================================================
+' DISK SPACE PRE-CHECK HELPER
+' ===============================================================================
+
+SUB HasSufficientDiskSpace(filePath AS STRING, bytesNeeded AS DOUBLE), INT
+    LARGE_INTEGER freeBytes, totalBytes, totalFree
+    DOUBLE freeDouble = 0.0
+    STRING driveRoot = ""
+    
+    IF MID$(filePath, 2, 1) = ":" THEN
+        driveRoot = LEFT$(filePath, 3)
+    ELSE
+        driveRoot = GETSTARTPATH
+    ENDIF
+
+    IF GetDiskFreeSpaceExA(driveRoot, &freeBytes, &totalBytes, &totalFree) <> 0 THEN
+        IF freeBytes.LowPart < 0 THEN
+            freeDouble = (4294967296.0 + freeBytes.LowPart) + (freeBytes.HighPart * 4294967296.0)
+        ELSE
+            freeDouble = freeBytes.LowPart + (freeBytes.HighPart * 4294967296.0)
+        ENDIF
+
+        IF freeDouble >= (bytesNeeded * 1.05) THEN RETURN 1
+    ENDIF
+
+    RETURN 0
+ENDSUB
+
+' ===============================================================================
+' FILE STATUS & CRYPTOGRAPHIC MARKER INSPECTOR
+' ===============================================================================
+
+SUB CheckFileStatusAndMarker(STRING filePath)
+    INT hFile = INVALID_HANDLE_VALUE
+    DEF headerBytes[16] AS CHAR
+    INT bytesRead = 0
+    STRING marker = ""
+    INT i
+
+    g_app.isProtectedMarker = 0
+
+    IF LEN(filePath) = 0 THEN RETURN
+
+    IF GetFileAttributesA(filePath) = INVALID_FILE_ATTRIBUTES THEN
+        g_app.statusMsg = "Warning: Target file no longer exists on disk!"
+        InvalidateRect(g_app.win.hwnd, NULL, 0)
+        RETURN
+    ENDIF
+
+    hFile = CreateFileA(filePath, GENERIC_READ, FILE_SHARE_READ, 0, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, 0)
+    IF hFile <> INVALID_HANDLE_VALUE THEN
+        ReadFile(hFile, &headerBytes, 16, &bytesRead, 0)
+        CloseHandle(hFile)
+
+        IF bytesRead >= 9 THEN
+            marker = ""
+            FOR i = 0 TO 8
+                marker = marker + CHR$(headerBytes[i] & 0xFF)
+            NEXT i
+
+            IF marker = "RGUARD256" THEN
+                g_app.isProtectedMarker = 1
+                g_app.statusMsg = "File Tagged: Already Protected with RGUARD256."
+            ELSE
+                g_app.statusMsg = "File Tagged: Unprotected Raw Payload."
+            ENDIF
+        ENDIF
+    ENDIF
+
+    InvalidateRect(g_app.win.hwnd, NULL, 0)
+ENDSUB
+
+' ===============================================================================
+' 64-BIT FILE SIZE HELPER
+' ===============================================================================
+
+SUB GetFileSize64(hFile AS INT), DOUBLE
+    LARGE_INTEGER liSize
+    DOUBLE dblSize = 0.0
+    
+    IF GetFileSizeEx(hFile, &liSize) <> 0 THEN
+        IF liSize.LowPart < 0 THEN
+            dblSize = (4294967296.0 + liSize.LowPart) + (liSize.HighPart * 4294967296.0)
+        ELSE
+            dblSize = liSize.LowPart + (liSize.HighPart * 4294967296.0)
+        ENDIF
+    ENDIF
+    
+    RETURN dblSize
+ENDSUB
+
+' ===============================================================================
+' HIGH-SPEED WIN32 BLOCK SHREDDER (1 MB Streaming Pipeline)
+' ===============================================================================
+SUB FastShredFileWin32(STRING filePath, DOUBLE totalBytes)
+    UINT hFile = INVALID_HANDLE_VALUE
+    POINTER pWipeBuf = NULL
+    INT wipeChunkSize = 1048576 ' 1 MB High-Throughput Buffer
+    UINT bytesWritten = 0
+    INT pass, numPasses = 1     ' 1 pass is optimal for SSDs (change to 3 if HDD mandated)
+    DOUBLE bytesWiped = 0.0
+
+    ' Allocate 1 MB alignment buffer
+    IF ALLOCMEM(pWipeBuf, 1, wipeChunkSize) <> 0 THEN RETURN
+
+    ' Open handle ONCE in unbuffered sequential write mode (FILE_FLAG_SEQUENTIAL_SCAN = 0x08000000)
+    hFile = CreateFileA(filePath, GENERIC_WRITE, 0, 0, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL | 0x08000000, 0)
+    IF hFile <> INVALID_HANDLE_VALUE AND hFile <> -1 THEN
+
+        FOR pass = 1 TO numPasses
+            g_app.statusMsg = "Sanitizing data ..." '(Pass " + STR$(pass) + "/" + STR$(numPasses) + ")..."
+            InvalidateRect(g_app.win.hwnd, NULL, 0)
+
+            ' Fast memory fill using standard zeroing or byte pattern
+            ' (Pass 1 = 0x00, Pass 2 = 0xFF, Pass 3 = 0x55)
+            CHAR fillVal = 0x00
+            IF pass = 2 THEN fillVal = 0xFF
+            IF pass = 3 THEN fillVal = 0x55
+
+            ' Fill 1 MB buffer instantly using Win32 API FillMemory
+            FillMemory(pWipeBuf, wipeChunkSize, fillVal)
+
+            ' Rewind file pointer to beginning for subsequent passes
+            SetFilePointer(hFile, 0, 0, 0) ' 0 = FILE_BEGIN
+
+            bytesWiped = 0.0
+            WHILE bytesWiped < totalBytes
+                INT toWrite = wipeChunkSize
+                IF (totalBytes - bytesWiped) < wipeChunkSize THEN
+                    toWrite = INT(totalBytes - bytesWiped)
+                ENDIF
+
+                WriteFile(hFile, pWipeBuf, toWrite, &bytesWritten, 0)
+                bytesWiped = bytesWiped + toWrite
+            ENDWHILE
+        NEXT pass
+
+        ' Ensure data is committed to platter/NAND before closing
+        FlushFileBuffers(hFile)
+        CloseHandle(hFile)
+
+        ' Truncate file length to 0 bytes to destroy file footprint before deletion
+        hFile = CreateFileA(filePath, GENERIC_WRITE, 0, 0, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, 0)
+        IF hFile <> INVALID_HANDLE_VALUE AND hFile <> -1 THEN
+            SetFilePointer(hFile, 0, 0, 0)
+            SetEndOfFile(hFile)
+            CloseHandle(hFile)
+        ENDIF
+
+        ' Unlink file from file system table
+        DeleteFileA(filePath)
+    ENDIF
+
+    FREEMEM pWipeBuf
+ENDSUB
+
+' ===============================================================================
+' NATIVE WIN32 + ZLIB COMPRESSION ENGINE
+' ===============================================================================
+/*
+SUB CompressFileGzWin32(STRING srcFile, STRING outFile), INT
+    INT hFileIn = INVALID_HANDLE_VALUE
+    INT gzHandle = 0
+    POINTER memChunk = NULL
+    INT chunkSize = 65536
+    DOUBLE fileLen = 0.0
+    DOUBLE bytesReadTotal = 0.0
+    INT bytesRead = 0
+    INT res = 0
+    INT flushCounter = 0
+
+    hFileIn = CreateFileA(srcFile, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, 0)
+    IF hFileIn = INVALID_HANDLE_VALUE THEN RETURN 0
+
+    fileLen = GetFileSize64(hFileIn)
+    IF fileLen <= 0.0 THEN
+        CloseHandle(hFileIn)
+        RETURN 0
+    ENDIF
+
+    IF ALLOCMEM(memChunk, 1, chunkSize) <> 0 THEN
+        CloseHandle(hFileIn)
+        RETURN 0
+    ENDIF
+
+    DELETEFILE outFile
+    gzHandle = gzopen(outFile, "wb9")
+    IF gzHandle = 0 THEN
+        FREEMEM memChunk
+        CloseHandle(hFileIn)
+        RETURN 0
+    ENDIF
+
+    DO
+        bytesRead = 0
+        res = ReadFile(hFileIn, memChunk, chunkSize, &bytesRead, NULL)
+        IF (res <> 0) AND (bytesRead > 0) THEN
+            gzwrite(gzHandle, memChunk, bytesRead)
+            bytesReadTotal = bytesReadTotal + bytesRead
+            
+            flushCounter++
+            IF flushCounter >= 1024 THEN
+                gzflush(gzHandle, Z_SYNC_FLUSH)
+                flushCounter = 0
+            ENDIF
+        ENDIF
+    UNTIL (res = 0) OR (bytesRead = 0)
+
+    CloseHandle(hFileIn)
+    gzclose(gzHandle)
+    FREEMEM memChunk
+
+    RETURN 1
+ENDSUB
+*/
+SUB ExpandFileGzWin32(STRING gzFile, STRING outFile), INT
+    INT hFileOut = INVALID_HANDLE_VALUE
+    INT hFileGz = INVALID_HANDLE_VALUE
+    INT gzHandle = 0
+    POINTER memChunk = NULL
+    INT chunkSize = 65536
+    INT bytesRead = 0
+    INT bytesWritten = 0
+    
+    ' Overflow-safe variables (in KB)
+    INT totalGzKB = 0, totalReadKB = 0
+    INT totalGzSize = 0, totalRead = 0, currentPercent = 0
+
+    ' 1. Fetch compressed file size
+    hFileGz = CreateFileA(gzFile, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, 0)
+    IF hFileGz <> INVALID_HANDLE_VALUE THEN
+        totalGzSize = GetFileSize(hFileGz, NULL)
+        CloseHandle(hFileGz)
+    ENDIF
+
+    ' Convert to KB to prevent totalRead * 100 integer overflow on files > 20 MB
+    totalGzKB = totalGzSize / 1024
+
+    ' 2. Open GZIP stream via ZLIB
+    gzHandle = gzopen(gzFile, "rb")
+    IF gzHandle = 0 THEN RETURN 0
+
+    ' 3. Allocate 64 KB streaming buffer
+    IF ALLOCMEM(memChunk, 1, chunkSize) <> 0 THEN
+        gzclose(gzHandle)
+        RETURN 0
+    ENDIF
+
+    ' 4. Create output destination file
+    hFileOut = CreateFileA(outFile, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, 0)
+    IF hFileOut = INVALID_HANDLE_VALUE THEN
+        FREEMEM memChunk
+        gzclose(gzHandle)
+        RETURN 0
+    ENDIF
+
+    ' 5. Decompress stream with overflow-safe percentage calculations
+    DO
+        bytesRead = gzread(gzHandle, memChunk, chunkSize)
+        IF bytesRead > 0 THEN
+            WriteFile(hFileOut, memChunk, bytesRead, &bytesWritten, NULL)
+
+            totalRead = totalRead + bytesRead
+            totalReadKB = totalRead / 1024
+
+            ' Compute overflow-safe 0-100 percentage
+            IF totalGzKB > 0 THEN
+                currentPercent = (totalReadKB * 100) / totalGzKB
+            ELSEIF totalGzSize > 0 THEN
+                currentPercent = (totalRead * 100) / totalGzSize
+            ENDIF
+
+            ' Strictly clamp bounds between 0 and 100
+            IF currentPercent < 0 THEN currentPercent = 0
+            IF currentPercent > 100 THEN currentPercent = 100
+
+            ' Update UI progress bar and status marquee message
+            IF currentPercent <> g_app.progressPos THEN
+                g_app.progressPos = currentPercent
+                g_app.statusMsg = "Expanding ZLIB Payload... " + STR$(currentPercent) + "%"
+                
+                ' Force immediate repaint of window canvas
+                InvalidateRect(g_app.win.hwnd, NULL, 0)
+                UpdateWindow(g_app.win.hwnd)
+            ENDIF
+        ENDIF
+    UNTIL bytesRead <= 0
+
+    ' Cleanup
+    CloseHandle(hFileOut)
+    FREEMEM memChunk
+    gzclose(gzHandle)
+
+    RETURN 1
+ENDSUB
+
+' ===============================================================================
+' PERSISTENT SETTINGS & IN-MEMORY DEFERRED LOGGING ROUTINES
+' ===============================================================================
+
+SUB LogAction(msg AS STRING)
+    STRING entryStr
+    INT strLen
+    POINTER pTarget
+
+    ' 1. Custom ISO-style timestamp formatting via IWBasic DATE$
+    entryStr = "[" + DATE$("yyyy-MM-dd") + " " + TIME$ + "] " + msg + "\r\n"
+    strLen = LEN(entryStr)
+
+    ' 2. Fast heap buffer copy without character-by-character loop overhead
+    IF g_app.pLogBuffer <> NULL AND (g_app.logBufUsed + strLen) < g_app.logBufSize THEN
+        pTarget = g_app.pLogBuffer + g_app.logBufUsed
+        
+        ' Direct block copy into heap memory
+        #<STRING>pTarget = entryStr
+        
+        ' Advance position index
+        g_app.logBufUsed = g_app.logBufUsed + strLen
+    ENDIF
+ENDSUB
+
+SUB SaveLogBufferToDisk()
+    UINT hFile
+    UINT bytesWritten
+    STRING szPath
+    POINTER pBuf
+
+    IF g_app.pLogBuffer <> NULL AND g_app.logBufUsed > 0 THEN
+        ' Assign to local pointer
+        pBuf = g_app.pLogBuffer
+
+        IF LEN(g_app.logPath) > 0 THEN
+            szPath = g_app.logPath
+        ELSE
+            szPath = GETSTARTPATH + "R256.log"
+        ENDIF
+
+        ' Open file in append mode (GENERIC_WRITE = 0x40000000, OPEN_ALWAYS = 4)
+        hFile = CreateFileA(szPath, 0x40000000, 1, 0, 4, 0x80, 0)
+        
+        IF hFile <> 0 AND hFile <> -1 THEN
+            ' Seek to end of file (FILE_END = 2)
+            SetFilePointer(hFile, 0, 0, 2)
+            
+            ' Write raw heap buffer to disk
+            WriteFile(hFile, pBuf, g_app.logBufUsed, &bytesWritten, 0)
+            CloseHandle(hFile)
+            
+            g_app.logBufUsed = 0
+        ENDIF
+    ENDIF
+ENDSUB
+
+' ===============================================================================
+' STACKNOTES-STYLE INI PARSER FOR R256
+' ===============================================================================
+SUB LoadSettings()
+    FILE inifile
+    STRING regel, value
+    STRING r256Path = GETSTARTPATH
+    STRING iniPath = r256Path + "R256.ini"
+    
+    STRING loadedPath = ""
+    INT winX = -9999, winY = -9999
+
+    IF OPENFILE(inifile, iniPath, "R") = 0 THEN
+        WHILE EOF(inifile) = 0
+            READ inifile, value
+            regel = LTRIM$(RTRIM$(value))
+            value = "0"
+
+            ' Split Key=Value pair at '='
+            IF INSTR(regel, "=") <> 0 THEN
+                value = RIGHT$(regel, LEN(regel) - INSTR(regel, "="))
+                value = LTRIM$(RTRIM$(value))
+            ENDIF
+
+            ' Parse R256 key tags
+            IF INSTR(regel, "[LastDir]") <> 0 THEN loadedPath = value
+            IF INSTR(regel, "[WinX]") > 0 THEN winX = VAL(value)
+            IF INSTR(regel, "[WinY]") > 0 THEN winY = VAL(value)
+        ENDWHILE
+
+        CLOSEFILE inifile
+		  ' messagebox 0, loadedPath, "debug",0|80
+        ' Apply target file path to UI edit box
+        IF LEN(loadedPath) > 0 THEN
+            SETCONTROLTEXT(g_app.win, ID_FILE_EDIT, loadedPath)
+            CheckFileStatusAndMarker(loadedPath)
+            g_app.statusMsg = "Restored last target path from settings."
+            LogAction("Persisted path loaded from R256.ini: " + loadedPath)
+        ENDIF
+
+        ' Apply window position if valid
+        IF winX > -9000 AND winY > -9000 THEN
+            SetWindowPos(g_app.win.hwnd, 0, winX, winY, 0, 0, SWP_NOSIZE | SWP_NOZORDER)
+            LogAction("Restored window position to: X=" + STR$(winX) + ", Y=" + STR$(winY))
+        ENDIF
+    ENDIF
+ENDSUB
+
+' ===============================================================================
+' FAIL-SAFE APP SETTINGS SAVER
+' Reads directly from ID_FILE_EDIT control and persists state to R256.ini
+' ===============================================================================
+SUB SaveSettings(lastDir AS STRING)
+    FILE inifile
+    wRECT rcWin
+    STRING targetPath = lastDir
+    STRING iniPath = GETSTARTPATH + "R256.ini"
+
+
+    targetPath = GETCONTROLTEXT(g_app.win, ID_FILE_EDIT)
+	 ' messagebox 0, targetpath, "debug",0|80
+
+    IF OPENFILE(inifile, iniPath, "W") = 0 THEN
+        WRITE inifile, "[Configuration]"
+        WRITE inifile, "[LastDir]=" + targetPath
+
+        IF g_app.win.hwnd <> 0 AND GetWindowRect(g_app.win.hwnd, &rcWin) <> 0 THEN
+            IF rcWin.left > -10000 AND rcWin.top > -10000 THEN
+                WRITE inifile, "[WinX]=" + STR$(rcWin.left)
+                WRITE inifile, "[WinY]=" + STR$(rcWin.top)
+            ELSE
+                WRITE inifile, "[WinX]=0"
+                WRITE inifile, "[WinY]=0"
+            ENDIF
+        ELSE
+            WRITE inifile, "[WinX]=0"
+            WRITE inifile, "[WinY]=0"
+        ENDIF
+
+        CLOSEFILE inifile
+        LogAction("Saved settings to R256.ini")
+    ENDIF
+ENDSUB
+' ===============================================================================
+' SECURE MEMORY SANITIZATION & KEY STRETCHING HELPERS
+' ===============================================================================
+
+SUB WipeBuffer(buf AS POINTER, size AS INT)
+    INT i
+    IF buf <> NULL AND size > 0 THEN
+        FOR i = 0 TO size - 1
+            #<CHAR>(buf + i) = 0
+        NEXT i
+    ENDIF
+ENDSUB
+
+SUB xtime(bVal AS INT), INT
+    INT res = ((bVal & 0xFF) << 1) & 0xFF
+    IF (bVal & 0x80) THEN res = (res || 0x1B) & 0xFF
+    RETURN res & 0xFF
+ENDSUB
+
+SUB GenerateTables()
+    INT i, p = 1, x, q, logVal
+    POINTER pPwr, pLog, pSBox
+    
+    FOR i = 0 TO 255
+        pPwr = g_app.pPwrTab + i
+        pLog = g_app.pLogTab + (p & 0xFF)
+        
+        #<CHAR>pPwr = p & 0xFF
+        #<CHAR>pLog = i & 0xFF
+        p = (p || xtime(p)) & 0xFF
+    NEXT i
+
+    FOR i = 0 TO 255
+        IF i = 0 THEN 
+            p = 0 
+        ELSE 
+            pLog = g_app.pLogTab + i
+            logVal = #<CHAR>pLog & 0xFF
+            logVal = (255 - logVal) % 255
+            IF logVal < 0 THEN logVal = logVal + 255
+            
+            pPwr = g_app.pPwrTab + logVal
+            p = #<CHAR>pPwr & 0xFF
+        ENDIF
+        
+        q = p
+        FOR x = 1 TO 4
+            q = (((q << 1) & 0xFF) | ((q >> 7) & 0xFF)) & 0xFF
+            p = (p || q) & 0xFF
+        NEXT x
+        
+        pSBox = g_app.pSBox + i
+        #<CHAR>pSBox = (p || 0x63) & 0xFF
+    NEXT i
+ENDSUB
+
+SUB StretchKey(password AS STRING, outKeyBuf AS POINTER)
+    DEF salt[16] AS CHAR
+    DEF workingKey[32] AS CHAR
+    INT i, iter, pwdLen = LEN(password)
+    INT mixVal, sIdx, kIdx
+    POINTER pSBoxByte, pOutByte
+
+    salt[0] = 0x52 : salt[1] = 0x69 : salt[2] = 0x6A : salt[3] = 0x6E
+    salt[4] = 0x64 : salt[5] = 0x61 : salt[6] = 0x65 : salt[7] = 0x6C
+    salt[8] = 0x53 : salt[9] = 0x61 : salt[10]= 0x74 : salt[11]= 0x32
+    salt[12]= 0x35 : salt[13]= 0x36 : salt[14]= 0x21 : salt[15]= 0x21
+
+    FOR i = 0 TO KEYBYTES - 1
+        IF i < pwdLen THEN
+            workingKey[i] = ASC(MID$(password, i + 1, 1)) || salt[i % 16]
+        ELSE
+            workingKey[i] = salt[i % 16]
+        ENDIF
+    NEXT i
+
+    FOR iter = 1 TO 1000
+        FOR i = 0 TO KEYBYTES - 1
+            kIdx = (i + iter) % 32
+            sIdx = (i + iter) % 16
+            mixVal = workingKey[kIdx] & 0xFF
+            mixVal = xtime(mixVal || salt[sIdx]) & 0xFF
+            
+            pSBoxByte = g_app.pSBox + mixVal
+            workingKey[i] = (#<CHAR>pSBoxByte & 0xFF) || workingKey[i]
+        NEXT i
+    NEXT iter
+
+    FOR i = 0 TO KEYBYTES - 1
+        pOutByte = outKeyBuf + i
+        #<CHAR>pOutByte = workingKey[i] & 0xFF
+    NEXT i
+
+    WipeBuffer(&workingKey, 32)
+    WipeBuffer(&salt, 16)
+ENDSUB
+
+' ===============================================================================
+' CORE AES MATH & CIPHER ENGINE
+' ===============================================================================
+
+SUB InitAES_Engine(), INT
+    ALLOCMEM(g_app.pPwrTab, 256, 1)
+    ALLOCMEM(g_app.pLogTab, 256, 1)
+    ALLOCMEM(g_app.pSBox, 256, 1)
+    ALLOCMEM(g_app.pKeyArray, 2048, 1)
+    ALLOCMEM(g_app.pCFBBuf, 128, 1)
+    ALLOCMEM(g_app.pDropBuf, 1024, 1)
+    
+    IF g_app.pPwrTab = NULL OR g_app.pLogTab = NULL OR g_app.pSBox = NULL OR g_app.pKeyArray = NULL OR g_app.pCFBBuf = NULL OR g_app.pDropBuf = NULL THEN RETURN 0
+    
+    GenerateTables()
+    RETURN 1
+ENDSUB
+
+SUB KeySched()
+    INT dl = 1, i, al, bx, keyColumn
+    POINTER pKey, pSBoxByte, pPrevKey
+    
+    pKey = g_app.pKeyArray + KEYBYTES
+
+    FOR i = 0 TO 447
+        keyColumn = i % 32
+        
+        bx = -4
+        IF keyColumn = 3 THEN bx = -3
+
+        pPrevKey = pKey + bx
+        al = #<CHAR>pPrevKey & 0xFF
+
+        IF keyColumn = 0 THEN
+            pSBoxByte = g_app.pSBox + al
+            al = #<CHAR>pSBoxByte & 0xFF
+            al = (al || dl) & 0xFF
+            dl = xtime(dl)
+        ELSEIF keyColumn = 16 THEN
+            pSBoxByte = g_app.pSBox + al
+            al = #<CHAR>pSBoxByte & 0xFF
+        ENDIF
+
+        pPrevKey = pKey - KEYBYTES
+        al = (al || (#<CHAR>pPrevKey & 0xFF)) & 0xFF
+        #<CHAR>pKey = al & 0xFF
+
+        pKey++
+    NEXT i
+ENDSUB
+
+' ===============================================================================
+' HARDWARE PROBE VIA STRUCTURED EXCEPTION HANDLING (SEH)
+' Attempts to execute a single aesenc instruction on dummy memory.
+' Returns 1 if hardware executes it, 0 if an illegal instruction exception fires.
+' ===============================================================================
+SUB IsAESNI_Supported(), INT
+    INT isHWSupported = 0
+
+    _asm
+        push ebx
+        push ecx
+        push edx
+
+        ; Reserve 32 bytes on stack for dummy XMM memory test
+        sub esp, 32
+        mov eax, esp
+
+        ; Set up Win32 32-bit SEH Exception Frame
+        push dword _seh_handler     ; Pointer to exception recovery handler
+        push dword [fs:0]           ; Pointer to previous SEH frame head
+        mov dword [fs:0], esp       ; Install our frame as active head
+
+        ; --- PROBE TEST INSTRUCTION ---
+        movdqu xmm0, [eax]
+        movdqu xmm1, [eax + 16]
+        
+        ; Raw hex opcodes for: aesenc xmm0, xmm1
+        db 0x66, 0x0F, 0x38, 0xDC, 0xC1
+
+        ; Execution succeeded! CPU executed aesenc without throwing an exception.
+        mov dword [ebp - 4], 1      ; First local variable (isHWSupported) sits at [ebp - 4]
+        jmp _seh_cleanup
+
+    _seh_handler:
+        ; --- EXCEPTION RECOVERY ROUTINE ---
+        ; Triggered if STATUS_ILLEGAL_INSTRUCTION (0xC000001D) occurs.
+        mov ecx, dword [esp + 12]   ; ECX = ContextRecord pointer
+        
+        ; Redirect EIP in ContextRecord to resume execution at _seh_fail
+        mov dword [ecx + 0xB8], _seh_fail  ; 0xB8 = EIP offset in 32-bit CONTEXT struct
+        
+        xor eax, eax                ; ExceptionContinueExecution = 0
+        ret
+
+    _seh_fail:
+        ; Exception caught: CPU lacks active AES-NI execution pipeline
+        mov dword [ebp - 4], 0
+
+    _seh_cleanup:
+        ; Restore original SEH chain head
+        pop dword [fs:0]
+        add esp, 4                  ; Drop handler pointer
+        add esp, 32                 ; Clean up dummy stack memory
+
+        pop edx
+        pop ecx
+        pop ebx
+    _endasm
+
+    RETURN isHWSupported
+ENDSUB
+
+' ===============================================================================
+' AES-NI HARDWARE BLOCK ENCRYPTION (256-BIT)
+' Encrypts a single 16-byte block in-place using CPU hardware instructions.
+'
+' Parameters:
+'   pBlock : POINTER to 16 bytes of input plaintext (overwritten with ciphertext)
+'   pKey   : POINTER to expanded key array (240 bytes / 15 round keys)
+' ===============================================================================
+SUB AESNI_EncryptBlock(POINTER pBlock, POINTER pKey)
+    IF pBlock = NULL OR pKey = NULL THEN RETURN
+
+    POINTER pDataBlock = pBlock
+    POINTER pKeyData = pKey
+
+    _asm
+        push eax
+        push edx
+
+        ; Fetch parameters directly from the IWBasic stack frame (EBP + offset)
+        ; [ebp + 8]  = 1st parameter (pBlock)
+        ; [ebp + 12] = 2nd parameter (pKey)
+        mov eax, dword [ebp + 8]
+        mov edx, dword [ebp + 12]
+
+        ; 1. Load 16-byte data block into XMM0 register
+        movdqu xmm0, [eax]
+
+        ; 2. Initial Round Key XOR (AddRoundKey)
+        movdqu xmm1, [edx]
+        pxor xmm0, xmm1
+
+        ; 3. Rounds 1 to 13 (Hardware SubBytes + ShiftRows + MixColumns + AddRoundKey)
+		  movdqu xmm1, [edx + 16]
+        db 0x66, 0x0F, 0x38, 0xDC, 0xC1
+
+        movdqu xmm1, [edx + 32]
+        db 0x66, 0x0F, 0x38, 0xDC, 0xC1
+
+        movdqu xmm1, [edx + 48]
+        db 0x66, 0x0F, 0x38, 0xDC, 0xC1
+
+        movdqu xmm1, [edx + 64]
+        db 0x66, 0x0F, 0x38, 0xDC, 0xC1
+
+        movdqu xmm1, [edx + 80]
+        db 0x66, 0x0F, 0x38, 0xDC, 0xC1
+
+        movdqu xmm1, [edx + 96]
+        db 0x66, 0x0F, 0x38, 0xDC, 0xC1
+
+        movdqu xmm1, [edx + 112]
+        db 0x66, 0x0F, 0x38, 0xDC, 0xC1
+
+        movdqu xmm1, [edx + 128]
+        db 0x66, 0x0F, 0x38, 0xDC, 0xC1
+
+        movdqu xmm1, [edx + 144]
+        db 0x66, 0x0F, 0x38, 0xDC, 0xC1
+
+        movdqu xmm1, [edx + 160]
+        db 0x66, 0x0F, 0x38, 0xDC, 0xC1
+
+        movdqu xmm1, [edx + 176]
+        db 0x66, 0x0F, 0x38, 0xDC, 0xC1
+
+        movdqu xmm1, [edx + 192]
+        db 0x66, 0x0F, 0x38, 0xDC, 0xC1
+
+        movdqu xmm1, [edx + 208]
+        db 0x66, 0x0F, 0x38, 0xDC, 0xC1
+
+        ; 4. Final Round 14 (aesenclast xmm0, xmm1 -> 66 0F 38 DD C1)
+        movdqu xmm1, [edx + 224]
+        db 0x66, 0x0F, 0x38, 0xDD, 0xC1
+
+        ; 5. Write encrypted 16-byte ciphertext back to pBlock
+        movdqu [eax], xmm0
+
+        ; Restore general registers
+        pop edx
+        pop eax
+    _endasm
+ENDSUB
+
+SUB CipherEngine()
+    INT round, i, c, r, shift, a, b, d, e, bVal, idx
+    POINTER pRK, pCFBByte, pSBoxByte, pRKByte
+    DEF tmpState[64] AS CHAR ' Expanded to 64 bytes for safety against index overshoot
+
+    ' If CPU supports AES-NI, execute hardware pipeline
+    IF g_app.hasAESNI THEN
+        AESNI_EncryptBlock(g_app.pCFBBuf, g_app.pKeyArray)
+    ELSE
+        ' Software Emulation Fallback
+        pRK = g_app.pKeyArray
+
+        FOR i = 0 TO BLOCKBYTES - 1
+            pCFBByte = g_app.pCFBBuf + i
+            pRKByte = pRK + i
+            bVal = ((#<CHAR>pCFBByte & 0xFF) || (#<CHAR>pRKByte & 0xFF)) & 0xFF
+            pSBoxByte = g_app.pSBox + bVal
+            #<CHAR>pCFBByte = #<CHAR>pSBoxByte & 0xFF
+        NEXT i
+
+        FOR round = 1 TO ROUNDS - 1
+            pRK = g_app.pKeyArray + (round * BLOCKBYTES)
+
+            FOR r = 0 TO 3
+                IF r = 0 THEN shift = 0
+                IF r = 1 THEN shift = 1
+                IF r = 2 THEN shift = 3
+                IF r = 3 THEN shift = 4
+
+                FOR c = 0 TO NCOLS - 1
+                    pCFBByte = g_app.pCFBBuf + r + (c * 4)
+                    idx = r + (((c + shift) % NCOLS) * 4)
+                    IF idx >= 0 AND idx < 64 THEN
+                        tmpState[idx] = #<CHAR>pCFBByte & 0xFF
+                    ENDIF
+                NEXT c
+            NEXT r
+
+            FOR i = 0 TO BLOCKBYTES - 1
+                pCFBByte = g_app.pCFBBuf + i
+                #<CHAR>pCFBByte = tmpState[i] & 0xFF
+            NEXT i
+
+            FOR c = 0 TO NCOLS - 1
+                i = c * 4
+                pCFBByte = g_app.pCFBBuf + i
+                a = #<CHAR>pCFBByte & 0xFF
+                
+                pCFBByte = g_app.pCFBBuf + i + 1
+                b = #<CHAR>pCFBByte & 0xFF
+                
+                pCFBByte = g_app.pCFBBuf + i + 2
+                d = #<CHAR>pCFBByte & 0xFF
+                
+                pCFBByte = g_app.pCFBBuf + i + 3
+                e = #<CHAR>pCFBByte & 0xFF
+
+                pCFBByte = g_app.pCFBBuf + i
+                #<CHAR>pCFBByte = (xtime(a) || (xtime(b) || b) || d || e) & 0xFF
+                
+                pCFBByte = g_app.pCFBBuf + i + 1
+                #<CHAR>pCFBByte = (a || xtime(b) || (xtime(d) || d) || e) & 0xFF
+                
+                pCFBByte = g_app.pCFBBuf + i + 2
+                #<CHAR>pCFBByte = (a || b || xtime(d) || (xtime(e) || e)) & 0xFF
+                
+                pCFBByte = g_app.pCFBBuf + i + 3
+                #<CHAR>pCFBByte = ((xtime(a) || a) || b || d || xtime(e)) & 0xFF
+            NEXT c
+
+            FOR i = 0 TO BLOCKBYTES - 1
+                pCFBByte = g_app.pCFBBuf + i
+                pRKByte = pRK + i
+                bVal = ((#<CHAR>pCFBByte & 0xFF) || (#<CHAR>pRKByte & 0xFF)) & 0xFF
+                pSBoxByte = g_app.pSBox + bVal
+                #<CHAR>pCFBByte = #<CHAR>pSBoxByte & 0xFF
+            NEXT i
+        NEXT round
+
+        pRK = g_app.pKeyArray + (ROUNDS * BLOCKBYTES)
+        FOR i = 0 TO BLOCKBYTES - 1
+            pCFBByte = g_app.pCFBBuf + i
+            pRKByte = pRK + i
+            #<CHAR>pCFBByte = ((#<CHAR>pCFBByte & 0xFF) || (#<CHAR>pRKByte & 0xFF)) & 0xFF
+        NEXT i
+
+        WipeBuffer(&tmpState, 64)
+    ENDIF
+ENDSUB
+
+SUB TestCipherInversion(), INT
+    DEF testData[32] AS CHAR
+    DEF origData[32] AS CHAR
+    DEF nextCFB[32] AS CHAR
+    STRING pwd = "TestPassword"
+    INT i
+    POINTER pCFBByte
+
+    FOR i = 0 TO 31
+        testData[i] = (i + 65) & 0xFF
+        origData[i] = testData[i]
+    NEXT i
+
+    StretchKey(pwd, g_app.pKeyArray)
+    FOR i = 0 TO 31
+        pCFBByte = g_app.pCFBBuf + i
+        #<CHAR>pCFBByte = 0x41
+    NEXT i
+    KeySched()
+
+    CipherEngine()
+    FOR i = 0 TO 31
+        pCFBByte = g_app.pCFBBuf + i
+        INT bInE = testData[i] & 0xFF
+        INT bOutE = (bInE || (#<CHAR>pCFBByte & 0xFF)) & 0xFF
+        testData[i] = bOutE
+        nextCFB[i] = bOutE
+    NEXT i
+
+    StretchKey(pwd, g_app.pKeyArray)
+    FOR i = 0 TO 31
+        pCFBByte = g_app.pCFBBuf + i
+        #<CHAR>pCFBByte = 0x41
+    NEXT i
+    KeySched()
+
+    CipherEngine()
+    FOR i = 0 TO 31
+        pCFBByte = g_app.pCFBBuf + i
+        INT bInD = testData[i] & 0xFF
+        INT bOutD = (bInD || (#<CHAR>pCFBByte & 0xFF)) & 0xFF
+        testData[i] = bOutD
+    NEXT i
+
+    FOR i = 0 TO 31
+        IF testData[i] <> origData[i] THEN RETURN 0
+    NEXT i
+
+    WipeBuffer(g_app.pKeyArray, 2048)
+    WipeBuffer(g_app.pCFBBuf, 128)
+    WipeBuffer(&testData, 32)
+    WipeBuffer(&origData, 32)
+    WipeBuffer(&nextCFB, 32)
+
+    RETURN 1
+ENDSUB
+
+' ===============================================================================
+' WIN32 BORDER STRIPPING SUBROUTINE
+' ===============================================================================
+
+SUB StripEditBorders(ctrlId AS INT)
+    UINT hwndCtrl, styleVal, exStyleVal
+    
+    hwndCtrl = GETCONTROLHANDLE(g_app.win, ctrlId)
+    IF hwndCtrl = 0 THEN RETURN
+
+    styleVal = GetWindowLongA(hwndCtrl, GWL_STYLE)
+    styleVal = styleVal & (~WS_BORDER)
+    SetWindowLongA(hwndCtrl, GWL_STYLE, styleVal)
+
+    exStyleVal = GetWindowLongA(hwndCtrl, GWL_EXSTYLE)
+    exStyleVal = exStyleVal & (~WS_EX_CLIENTEDGE)
+    SetWindowLongA(hwndCtrl, GWL_EXSTYLE, exStyleVal)
+
+    SetWindowPos(hwndCtrl, 0, 0, 0, 0, 0, SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | 0x0010)
+ENDSUB
+
+' ===============================================================================
+' EDIT CONTROL SUBCLASS WNDPROC
+' ===============================================================================
+
+SUB EditSubclassProc(hwnd AS UINT, uMsg AS UINT, wp AS UINT, lp AS UINT), INT
+    UINT oldProc
+    
+    IF hwnd = GETCONTROLHANDLE(g_app.win, ID_FILE_EDIT) THEN
+        oldProc = g_app.pOldFileEditProc
+    ELSE
+        oldProc = g_app.pOldPassEditProc
+    ENDIF
+
+    SELECT uMsg
+        CASE WM_KEYDOWN
+            ' Esc & Hotkey forwarding
+            IF wp = 0x1B OR (GetKeyState(0x11) & 0x8000) THEN
+                SendMessageA(g_app.win.hwnd, WM_KEYDOWN, wp, lp)
+                RETURN 0
+            ENDIF
+
+            ' Forward Viewport Navigation Keys when on Help Page
+            IF g_app.activePage = PAGE_HELP THEN
+                IF wp = 0x21 OR wp = 0x22 OR wp = 0x26 OR wp = 0x28 OR wp = 0x24 OR wp = 0x23 THEN
+                    SendMessageA(g_app.win.hwnd, WM_KEYDOWN, wp, lp)
+                    RETURN 0
+                ENDIF
+            ENDIF
+
+        CASE WM_SETFOCUS
+            IF hwnd = GETCONTROLHANDLE(g_app.win, ID_FILE_EDIT) THEN
+                g_app.focusedEdit = 1
+            ELSE
+                g_app.focusedEdit = 2
+            ENDIF
+            InvalidateRect(g_app.win.hwnd, NULL, 0)
+
+        CASE WM_KILLFOCUS
+            g_app.focusedEdit = 0
+            InvalidateRect(g_app.win.hwnd, NULL, 0)
+    ENDSELECT
+
+    RETURN CallWindowProcA(oldProc, hwnd, uMsg, wp, lp)
+ENDSUB
+
+' ===============================================================================
+' GDI+ LIFECYCLE MANAGEMENT
+' ===============================================================================
+
+SUB InitGDIPlus(), INT
+    IF g_app.gdiRefCount = 0 THEN
+        GdiplusStartupInput gdipInput
+        gdipInput.GdiplusVersion = 1
+        gdipInput.DebugEventCallback = NULL
+        gdipInput.SuppressBackgroundThread = 0
+        gdipInput.SuppressExternalCodecs = 0
+        
+        IF GdiplusStartup(&g_app.gdiToken, &gdipInput, NULL) <> 0 THEN RETURN 0
+    ENDIF
+    g_app.gdiRefCount = g_app.gdiRefCount + 1
+    RETURN 1
+ENDSUB
+
+SUB ShutdownGDIPlus()
+    IF g_app.gdiRefCount > 0 THEN
+        g_app.gdiRefCount = g_app.gdiRefCount - 1
+        IF g_app.gdiRefCount = 0 AND g_app.gdiToken <> 0 THEN
+            GdiplusShutdown(g_app.gdiToken)
+            g_app.gdiToken = 0
+        ENDIF
+    ENDIF
+ENDSUB
+
+' ===============================================================================
+' GDI+ ROUNDED BUTTON VECTOR HELPER
+' ===============================================================================
+
+SUB DrawGdiPlusButton(gfx AS POINTER, x AS FLOAT, y AS FLOAT, w AS FLOAT, h AS FLOAT, r AS FLOAT, bgClr AS UINT, borderClr AS UINT, textClr AS UINT, btnText AS STRING, hFont AS UINT, memDC AS UINT)
+    POINTER pPath = NULL, pBrush = NULL, pPen = NULL
+    FLOAT diameter = r * 2.0
+    wRECT rcText
+
+    GdipCreatePath(0, &pPath)
+    IF pPath <> NULL THEN
+        GdipAddPathArc(pPath, x, y, diameter, diameter, 180.0, 90.0)
+        GdipAddPathArc(pPath, x + w - diameter, y, diameter, diameter, 270.0, 90.0)
+        GdipAddPathArc(pPath, x + w - diameter, y + h - diameter, diameter, diameter, 0.0, 90.0)
+        GdipAddPathArc(pPath, x, y + h - diameter, diameter, diameter, 90.0, 90.0)
+        GdipClosePathFigure(pPath)
+        GdipCreateSolidFill(bgClr, &pBrush)
+        IF pBrush <> NULL THEN
+            GdipFillPath(gfx, pBrush, pPath)
+            GdipDeleteBrush(pBrush)
+        ENDIF
+        GdipCreatePen1(borderClr, 1.2, 2, &pPen)
+        IF pPen <> NULL THEN
+            GdipDrawPath(gfx, pPen, pPath)
+            GdipDeletePen(pPen)
+        ENDIF
+        GdipDeletePath(pPath)
+    ENDIF
+
+    rcText.left = INT(x) : rcText.top = INT(y) : rcText.right = INT(x + w) : rcText.bottom = INT(y + h)
+    SetBkMode(memDC, 1)
+    SetTextColor(memDC, textClr)
+    SelectObject(memDC, hFont)
+    DrawTextA(memDC, btnText, -1, &rcText, 0x00000025)
+ENDSUB
+
+' ===============================================================================
+' VIEWPORT STAGE PANELS: PANEL 0 (ABOUT) & PANEL 2 (CATFOOD GDI HELP)
+' ===============================================================================
+' CENTERED VERTICAL MARQUEE ABOUT PANEL (Starts directly at Bottom Edge)
+' ===============================================================================
+SUB RenderAboutPanel(hdc AS INT)
+    UINT hFontHeader, hFontBody, hOldFont
+    wRECT rcLine
+    INT startY = 0, currentY = 0, lineH = 18, count = 0
+    UINT txtColor = RGB_TEXT_WHITE
+
+    ' GDI+ Gradient Overlay Pointers
+    POINTER pGfx = NULL, pTopBrush = NULL, pBtmBrush = NULL
+    POINTL pt1, pt2
+    UINT colSolidDark, colTransDark
+
+    ' Logo positioning dimensions
+    INT logoW = 220, logoH = 39
+    INT logoPadding = 1  ' Gap between logo and first text line
+    INT logoX = 0, logoY = 0
+
+    ' 1. Lock GDI drawing strictly inside About Viewport bounds
+    SaveDC(hdc)
+    IntersectClipRect(hdc, 0, VIEWPORT_Y, VIEWPORT_WIDTH, VIEWPORT_Y + VIEWPORT_HEIGHT)
+
+    ' Baseline startY = top edge of the entire scroll block (the logo top)
+    ' When aboutScrollY = 0, logoY sits EXACTLY at the bottom edge of the viewport
+    startY = (VIEWPORT_Y + VIEWPORT_HEIGHT) - g_app.aboutScrollY
+
+    logoY = startY
+    logoX = (VIEWPORT_WIDTH - logoW) / 2
+
+    ' Text starts directly below logo + padding
+    currentY = startY + logoH + logoPadding
+
+    ' 2. Initialize Single GDI+ Graphics Object for whole frame
+    GdipCreateFromHDC(hdc, &pGfx)
+
+    ' Draw Logo
+    IF pGfx <> NULL AND g_app.pGpAboutLogo <> NULL THEN
+        IF (logoY + logoH) > VIEWPORT_Y AND logoY < (VIEWPORT_Y + VIEWPORT_HEIGHT) THEN
+            GdipDrawImageRectI(pGfx, g_app.pGpAboutLogo, logoX, logoY, logoW, logoH)
+        ENDIF
+    ENDIF
+
+    ' 3. Render Marquee Text Array
+    hFontHeader = CreateFontA(-14, 0, 0, 0, 700, 0, 0, 0, 0, 0, 0, 5, 0, "Tahoma")
+    hFontBody   = CreateFontA(-12, 0, 0, 0, 400, 0, 0, 0, 0, 0, 0, 5, 0, "Tahoma")
+
+    SetBkMode(hdc, 1) ' TRANSPARENT
+
+    FOR count = 0 TO (g_creditsCount - 1)
+        IF LEN(g_credits[count]) > 0 THEN
+            IF count = 0 THEN
+                txtColor = RGB_CYAN_ACCENT
+                hOldFont = SelectObject(hdc, hFontHeader)
+            ELSEIF count = 1 OR count = 13 THEN
+                txtColor = RGB_GOLD_ACCENT
+                hOldFont = SelectObject(hdc, hFontHeader)
+            ELSEIF count = 3 OR count = 8 OR count = 12 THEN
+                txtColor = RGB_TEXT_MUTED
+                hOldFont = SelectObject(hdc, hFontBody)
+            ELSEIF count = 9 OR count = 10 THEN
+                txtColor = RGB_CYAN_ACCENT
+                hOldFont = SelectObject(hdc, hFontBody)
+            ELSEIF count = 17 THEN
+                txtColor = RGB_TEXT_MUTED
+                hOldFont = SelectObject(hdc, hFontBody)
+            ELSE
+                txtColor = RGB_TEXT_WHITE
+                hOldFont = SelectObject(hdc, hFontBody)
+            ENDIF
+
+            SetTextColor(hdc, txtColor)
+
+            rcLine.left = 10
+            rcLine.top = currentY
+            rcLine.right = VIEWPORT_WIDTH - 10
+            rcLine.bottom = currentY + lineH + 2
+
+            DrawTextA(hdc, g_credits[count], -1, &rcLine, 0x00000801)
+
+            SelectObject(hdc, hOldFont)
+        ENDIF
+
+        currentY = currentY + lineH
+    NEXT count
+
+    DeleteObject(hFontHeader)
+    DeleteObject(hFontBody)
+
+    ' 4. GDI+ Top & Bottom Ambient Shadow Vignette (re-using pGfx)
+    IF pGfx <> NULL THEN
+        colSolidDark = 0xFF0D1117
+        colTransDark = 0x000D1117
+
+        ' A. Top Shadow Vignette
+        pt1.x = 0 : pt1.y = VIEWPORT_Y
+        pt2.x = 0 : pt2.y = VIEWPORT_Y + 50
+        GdipCreateLineBrushI(&pt1, &pt2, colSolidDark, colTransDark, 0, &pTopBrush)
+        IF pTopBrush <> NULL THEN
+            GdipFillRectangleI(pGfx, pTopBrush, 0, VIEWPORT_Y, VIEWPORT_WIDTH, 50)
+            GdipDeleteBrush(pTopBrush)
+        ENDIF
+
+        ' B. Bottom Shadow Vignette
+        pt1.x = 0 : pt1.y = (VIEWPORT_Y + VIEWPORT_HEIGHT - 50)
+        pt2.x = 0 : pt2.y = (VIEWPORT_Y + VIEWPORT_HEIGHT)
+        GdipCreateLineBrushI(&pt1, &pt2, colTransDark, colSolidDark, 0, &pBtmBrush)
+        IF pBtmBrush <> NULL THEN
+            GdipFillRectangleI(pGfx, pBtmBrush, 0, (VIEWPORT_Y + VIEWPORT_HEIGHT - 50), VIEWPORT_WIDTH, 50)
+            GdipDeleteBrush(pBtmBrush)
+        ENDIF
+
+        GdipDeleteGraphics(pGfx)
+    ENDIF
+
+    ' Restore DC Clipping Region
+    RestoreDC(hdc, -1)
+ENDSUB
+
+' ===============================================================================
+' RENDER HELP PANEL SUBROUTINE (Viewport Page 2 - Fixed Stack Safety)
+' ===============================================================================
+
+SUB RenderHelpPanel(hdc AS INT)
+    wRECT rcDraw
+    INT currentY = 80 - g_app.scrollY
+    INT startY = 80
+    INT currentX = 20, lineMaxHeight = 16
+    INT pLen = 0, i = 1, tagEnd = 0
+    
+    ' Local string variables kept under 64 bytes to preserve stack space
+    STRING tag[64], ch[2]
+    
+    UINT hFontNormal, hFontBold, hFontHeader, hCurrentFont
+    SIZESTRUCT szText
+    UINT hBulletBrush
+    INT totalContentHeight = 0
+
+    ' GDI+ Pointer for Book Icon Rendering
+    POINTER pGfx = NULL
+    INT iconX = 0, iconY = 0
+
+    ' Lock GDI drawing inside Help Viewport bounds
+    SaveDC(hdc)
+    IntersectClipRect(hdc, 0, VIEWPORT_Y, VIEWPORT_WIDTH, VIEWPORT_Y + VIEWPORT_HEIGHT)
+
+    ' Build Help Payload using global structure heap buffer
+    g_app.htmlBuf = "<h1>Documentation</h1><br>"
+    g_app.htmlBuf = g_app.htmlBuf + "<b>1. Overview:</b><br>"
+    g_app.htmlBuf = g_app.htmlBuf + "<p>A native file-hardening tool written in <b>IWBasic 2.5</b> featuring a dual-buffered GDI/GDI+ skinned canvas, real-time logging, and native configuration persistence.<br></p>"
+    g_app.htmlBuf = g_app.htmlBuf + "<p><b>2. Technical Specifications:</b><br>"
+    g_app.htmlBuf = g_app.htmlBuf + "<ul>"
+    g_app.htmlBuf = g_app.htmlBuf + "<li><b>Algorithm:</b> Rijndael-256 (True 256-bit block / 256-bit key) with AES-NI hardware acceleration</li>"
+    g_app.htmlBuf = g_app.htmlBuf + "<li><b>Chaining Mode:</b> Cipher Feedback (CFB) stream chaining</li>"
+    g_app.htmlBuf = g_app.htmlBuf + "<li><b>Key Stretching:</b> 1000-Iteration PBKDF2-style key derivation using static salt</li>"
+    g_app.htmlBuf = g_app.htmlBuf + "<li><b>Compression Engine:</b> Raw <b><i>zlib.dll</i></b> integration (exact 1 MB chunk progress tracking)</li>"
+    g_app.htmlBuf = g_app.htmlBuf + "<li><b>Stream Identifier:</b> Dual-offset header detection (0 & 16) with <b><i>RGUARD256</i></b> signature marking</li>"
+    g_app.htmlBuf = g_app.htmlBuf + "<li><b>Shredder:</b> High-speed 1 MB Win32 block streaming sanitization with file truncation</li>"
+    g_app.htmlBuf = g_app.htmlBuf + "<li><b>Memory Security:</b> Explicit zero-fill sanitation via <b><i>WipeBuffer</i></b></li>"
+    g_app.htmlBuf = g_app.htmlBuf + "<li><b>System Guard:</b> Heuristic protection blocking Windows, Program Files, and System paths</li>"
+    g_app.htmlBuf = g_app.htmlBuf + "<li><b>Settings Persistence:</b> Session state and window positioning via native INI parser</li>"
+    g_app.htmlBuf = g_app.htmlBuf + "</ul><br></p>"
+    g_app.htmlBuf = g_app.htmlBuf + "<p><b>3. Interface & Usage Instructions:</b><br>"
+    g_app.htmlBuf = g_app.htmlBuf + "<ul>"
+    g_app.htmlBuf = g_app.htmlBuf + "<li><b>Select Target:</b> Drag & drop files onto canvas, click <b>BROWSE</b>, or press <b>Ctrl+B</b></li>"
+    g_app.htmlBuf = g_app.htmlBuf + "<li><b>ZIP Option:</b> Tick <b><i>ZIP first</i></b> to compress stream payloads via ZLIB prior to encryption</li>"
+    g_app.htmlBuf = g_app.htmlBuf + "<li><b>Execute Protect:</b> Click <b>PROTECT FILE</b> or press <b>Ctrl+P</b></li>"
+    g_app.htmlBuf = g_app.htmlBuf + "<li><b>Execute Restore:</b> Click <b>RESTORE FILE</b> or press <b>Ctrl+R</b></li>"
+    g_app.htmlBuf = g_app.htmlBuf + "</ul><br></p>"
+    g_app.htmlBuf = g_app.htmlBuf + "<p><b>4. Keyboard Accelerators:</b><br>"
+    g_app.htmlBuf = g_app.htmlBuf + "<ul>"
+    g_app.htmlBuf = g_app.htmlBuf + "<li><b>ESC:</b> Instantly slide back to Main Control Panel</li>"
+    g_app.htmlBuf = g_app.htmlBuf + "<li><b>Ctrl+A:</b> Switch Viewport to About Screen</li>"
+    g_app.htmlBuf = g_app.htmlBuf + "<li><b>Ctrl+H:</b> Switch Viewport to Help Screen</li>"
+    g_app.htmlBuf = g_app.htmlBuf + "<li><b>Ctrl+M:</b> Send Mail to Author. Subject : R256</li>"
+    g_app.htmlBuf = g_app.htmlBuf + "<li><b>PageUp / PageDown:</b> Fast vertical viewport scrolling</li>"
+    g_app.htmlBuf = g_app.htmlBuf + "<li><b>Up / Down Arrows:</b> Fine incremental line scrolling</li>"
+    g_app.htmlBuf = g_app.htmlBuf + "</ul><br></p>"
+    g_app.htmlBuf = g_app.htmlBuf + "<p><b>CRITICAL WARNING:</b><br>"
+    g_app.htmlBuf = g_app.htmlBuf + "File shredding is <b>PERMANENT</b>. If you protect a file and lose the passphrase, recovery is mathematically impossible.<br></p>"
+
+    hFontNormal = CreateFontA(-11, 0, 0, 0, 400, 0, 0, 0, 0, 0, 0, 5, 0, "Verdana")
+    hFontBold   = CreateFontA(-12, 0, 0, 0, 700, 0, 0, 0, 0, 0, 0, 5, 0, "Tahoma")
+    hFontHeader = CreateFontA(-16, 0, 0, 0, 700, 0, 0, 0, 0, 0, 0, 5, 0, "Tahoma")
+
+    hCurrentFont = hFontNormal
+    SelectObject(hdc, hCurrentFont)
+    SetBkMode(hdc, 1)
+    SetTextColor(hdc, RGB_TEXT_WHITE)
+
+    pLen = LEN(g_app.htmlBuf)
+    i = 1
+
+    WHILE i <= pLen
+        ch = MID$(g_app.htmlBuf, i, 1)
+
+        IF ch = "<" THEN
+            tagEnd = INSTR(g_app.htmlBuf, ">", i)
+            IF tagEnd > 0 THEN
+                tag = UCASE$(MID$(g_app.htmlBuf, i + 1, tagEnd - i - 1))
+                
+                IF tag = "BR" THEN
+                    currentY = currentY + lineMaxHeight
+                    currentX = 20
+                ELSEIF tag = "P" THEN
+                    currentY = currentY + lineMaxHeight + 4
+                    currentX = 20
+                ELSEIF tag = "H1" THEN
+                    currentX = 20
+                    hCurrentFont = hFontHeader
+                    SelectObject(hdc, hCurrentFont)
+                    SetTextColor(hdc, RGB_CYAN_ACCENT)
+                    lineMaxHeight = 20
+
+                    ' --- DRAW 32x32 BOOK ICON (OPPOSITE TO "DOCUMENTATION" TITLE) ---
+                    IF g_app.pGpBookIcon <> NULL THEN
+                        iconX = VIEWPORT_WIDTH - 32 - 20 ' 20px padding from right edge
+                        iconY = currentY - 4             ' Align vertically with H1 line
+                        
+                        ' Only issue GDI+ draw if within viewport bounds
+                        IF (iconY + 32) > VIEWPORT_Y AND iconY < (VIEWPORT_Y + VIEWPORT_HEIGHT) THEN
+                            GdipCreateFromHDC(hdc, &pGfx)
+                            IF pGfx <> NULL THEN
+                                GdipDrawImageRectI(pGfx, g_app.pGpBookIcon, iconX, iconY, 32, 32)
+                                GdipDeleteGraphics(pGfx)
+                            ENDIF
+                        ENDIF
+                    ENDIF
+
+                ELSEIF tag = "/H1" THEN
+                    currentY = currentY + lineMaxHeight + 4
+                    currentX = 20
+                    hCurrentFont = hFontNormal
+                    SelectObject(hdc, hCurrentFont)
+                    SetTextColor(hdc, RGB_TEXT_WHITE)
+                    lineMaxHeight = 15
+                ELSEIF tag = "B" THEN
+                    hCurrentFont = hFontBold
+                    SelectObject(hdc, hCurrentFont)
+                ELSEIF tag = "/B" THEN
+                    hCurrentFont = hFontNormal
+                    SelectObject(hdc, hCurrentFont)
+                ELSEIF tag = "I" THEN
+                    SetTextColor(hdc, RGB_GOLD_ACCENT)
+                ELSEIF tag = "/I" THEN
+                    SetTextColor(hdc, RGB_TEXT_WHITE)
+                ELSEIF tag = "LI" THEN
+                    currentY = currentY + lineMaxHeight + 2
+                    currentX = 35
+                    rcDraw.left = 24 : rcDraw.top = currentY + 4 : rcDraw.right = 29 : rcDraw.bottom = currentY + 9
+                    hBulletBrush = CreateSolidBrush(RGB_CYAN_ACCENT)
+                    FillRect(hdc, &rcDraw, hBulletBrush)
+                    DeleteObject(hBulletBrush)
+                ENDIF
+
+                i = tagEnd + 1
+            ELSE
+                i++
+            ENDIF
+        ELSE
+            g_app.tokenBuf = ""
+            WHILE (i <= pLen)
+                ch = MID$(g_app.htmlBuf, i, 1)
+                IF ch = " " OR ch = "<" THEN BREAK
+                g_app.tokenBuf = g_app.tokenBuf + ch
+                i++
+            WEND
+
+            IF i <= pLen THEN
+                IF MID$(g_app.htmlBuf, i, 1) = " " THEN
+                    g_app.tokenBuf = g_app.tokenBuf + " "
+                    i++
+                ENDIF
+            ENDIF
+
+            IF LEN(g_app.tokenBuf) > 0 THEN
+                GetTextExtentPoint32A(hdc, g_app.tokenBuf, LEN(g_app.tokenBuf), &szText)
+
+                IF (currentX + szText.cx) > 400 THEN
+                    currentY = currentY + lineMaxHeight
+                    currentX = 20
+                ENDIF
+
+                rcDraw.left = currentX : rcDraw.top = currentY : rcDraw.right = currentX + szText.cx : rcDraw.bottom = currentY + szText.cy
+                DrawTextA(hdc, g_app.tokenBuf, -1, &rcDraw, 0x00000800)
+                currentX = currentX + szText.cx
+            ENDIF
+        ENDIF
+    WEND
+
+    DeleteObject(hFontNormal)
+    DeleteObject(hFontBold)
+    DeleteObject(hFontHeader)
+
+    ' Calculate Total Extent & Set maxScrollY Dynamically
+    totalContentHeight = (currentY + lineMaxHeight + g_app.scrollY) - startY
+    IF totalContentHeight > VIEWPORT_HEIGHT THEN
+        g_app.maxScrollY = totalContentHeight - VIEWPORT_HEIGHT + 20
+    ELSE
+        g_app.maxScrollY = 0
+    ENDIF
+
+    IF g_app.scrollY > g_app.maxScrollY THEN g_app.scrollY = g_app.maxScrollY
+
+    RestoreDC(hdc, -1)
+ENDSUB
+
+SUB RenderCustomScrollbar(memDC AS UINT, gfx AS POINTER)
+    INT trackX = 420, trackY = VIEWPORT_Y + 4
+    INT trackW = 10, trackH = VIEWPORT_HEIGHT - 8
+    INT thumbH, thumbY, maxThumbY
+    POINTER pBrush = NULL, pPen = NULL, pPath = NULL
+    wRECT rcTrack
+    FLOAT r = 4.0
+
+    ' Early return if no scrolling is required
+    IF g_app.maxScrollY <= 0 THEN RETURN
+
+    ' 1. Calculate Scroll Thumb Bounds based on Dynamic MaxScrollY
+    IF g_app.scrollY < 0 THEN g_app.scrollY = 0
+    IF g_app.scrollY > g_app.maxScrollY THEN g_app.scrollY = g_app.maxScrollY
+
+    thumbH = INT((FLOAT(VIEWPORT_HEIGHT) / FLOAT(VIEWPORT_HEIGHT + g_app.maxScrollY)) * FLOAT(trackH))
+    IF thumbH < 35 THEN thumbH = 35 ' Minimum thumb grab size
+
+    maxThumbY = trackH - thumbH
+    thumbY = trackY + INT((FLOAT(g_app.scrollY) / FLOAT(g_app.maxScrollY)) * FLOAT(maxThumbY))
+
+    ' Save Thumb Bounding Rect for Mouse Hit-Testing
+    g_app.rcThumb.left = trackX - 2
+    g_app.rcThumb.right = trackX + trackW + 2
+    g_app.rcThumb.top = thumbY
+    g_app.rcThumb.bottom = thumbY + thumbH
+
+    ' 2. Draw Track
+    rcTrack.left = trackX : rcTrack.top = trackY : rcTrack.right = trackX + trackW : rcTrack.bottom = trackY + trackH
+    UINT hBrushTrack = CreateSolidBrush(0x120C08)
+    FillRect(memDC, &rcTrack, hBrushTrack)
+    DeleteObject(hBrushTrack)
+
+    ' 3. Draw Rounded Thumb using GDI+
+    IF gfx <> NULL THEN
+        UINT thumbClr = ARGB_CYAN_GLOW
+        IF g_app.isDraggingThumb THEN thumbClr = ARGB_GOLD_BTN
+
+        GdipCreatePath(0, &pPath)
+        IF pPath <> NULL THEN
+            FLOAT fx = FLOAT(trackX), fy = FLOAT(thumbY), fw = FLOAT(trackW), fh = FLOAT(thumbH)
+            FLOAT d = r * 2.0
+            
+            GdipAddPathArc(pPath, fx, fy, d, d, 180.0, 90.0)
+            GdipAddPathArc(pPath, fx + fw - d, fy, d, d, 270.0, 90.0)
+            GdipAddPathArc(pPath, fx + fw - d, fy + fh - d, d, d, 0.0, 90.0)
+            GdipAddPathArc(pPath, fx, fy + fh - d, d, d, 90.0, 90.0)
+            GdipClosePathFigure(pPath)
+
+            GdipCreateSolidFill(thumbClr, &pBrush)
+            IF pBrush <> NULL THEN
+                GdipFillPath(gfx, pBrush, pPath)
+                GdipDeleteBrush(pBrush)
+            ENDIF
+            
+            GdipDeletePath(pPath)
+        ENDIF
+    ENDIF
+ENDSUB
+
+' ===============================================================================
+' NATIVE GDI / GDI+ HYBRID RENDER ENGINE (With Stage Translation)
+' ===============================================================================
+
+SUB RenderGDIPlusUI(hdc AS INT)
+    UINT memDC, hBmp, hOldBmp, hBrush, hPen, hOldPen
+    UINT hFontTitle, hFontSub, hFontLabel, hFontBar, hFontLink, hOldFont
+    wRECT rcBox, rectFull, rectEmpty
+    POINTER pMainGfx = NULL, pBrushGlow = NULL, pPenGlow = NULL, pScanPen = NULL, pShadowPath = NULL
+    
+    STRING strTitle = "Rijndael Guard"
+    STRING strSub   = "256-Bit CFB Pipeline Engine"
+    STRING strLbl1  = "Target File Path:"
+    STRING strLbl2  = "Cipher Key / Password:"
+    STRING strBtn1  = "&BROWSE..."
+    STRING strBtn2  = "&PROTECT FILE"
+    STRING strBtn3  = "&RESTORE FILE"
+    STRING strFooter = "Help | Mail Author | About this program"
+    STRING sHelp = "Help", sMail = "Mail Author", sAbout = "About this program", sPipe = " | "
+    SIZESTRUCT szFull, szH, szM, szP, szH1, szM1, szA1
+    INT footerX, footerY = 345, underlineY
+    UINT btn1Bg, btn2Bg, btn3Bg, edit1Border, edit2Border
+    INT barWidth = 395, barHeight = 26, barX = 20, barY = 287
+    INT xdiv, textX, textY, scanY
+    INT offX = g_app.stageX
+    GpPointF ptStart, ptEnd
+    CHAR szExe[260]
+    UINT hIcon
+
+    memDC = CreateCompatibleDC(hdc)
+    hBmp = CreateCompatibleBitmap(hdc, 440, 395)
+    hOldBmp = SelectObject(memDC, hBmp)
+    GdipCreateFromHDC(memDC, &pMainGfx)
+    IF pMainGfx <> NULL THEN
+        GdipSetTextRenderingHint(pMainGfx, 5)   
+        GdipSetSmoothingMode(pMainGfx, 2)       
+    ENDIF
+
+    rcBox.left = 0 : rcBox.top = 0 : rcBox.right = 440 : rcBox.bottom = 395
+    hBrush = CreateSolidBrush(RGB_BG_DARK)
+    FillRect(memDC, &rcBox, hBrush)
+    DeleteObject(hBrush)
+
+    ' Header Section (Fixed Top Banner)
+    IF pMainGfx <> NULL THEN
+        ptStart.X = 0.0 : ptStart.Y = 0.0 : ptEnd.X = 0.0 : ptEnd.Y = 65.0
+        GdipCreateLineBrush(&ptStart, &ptEnd, ARGB_FOOTER_TOP, ARGB_FOOTER_BOT, WrapModeTile, &pBrushGlow)
+        IF pBrushGlow <> NULL THEN
+            GdipFillRectangleI(pMainGfx, pBrushGlow, 0, 0, 440, 65)
+            GdipDeleteBrush(pBrushGlow)
+        ENDIF
+
+        GdipCreatePen1(ARGB_SCANLINE, 1.0, 2, &pScanPen)
+        IF pScanPen <> NULL THEN
+            FOR scanY = 2 TO 63 STEP 2
+                GdipDrawLineI(pMainGfx, pScanPen, 0, scanY, 440, scanY)
+            NEXT scanY
+            GdipDeletePen(pScanPen)
+        ENDIF
+    ENDIF
+
+    hPen = CreatePen(0, 1, RGB_PANEL_BORDER)
+    hOldPen = SelectObject(memDC, hPen)
+    MoveToEx(memDC, 0, 65, NULL) : LineToWin32(memDC, 440, 65)
+    SelectObject(memDC, hOldPen) : DeleteObject(hPen)
+
+    GetModuleFileNameA(0, szExe, 260)
+    hIcon = ExtractIconA(GetModuleHandleA(NULL), szExe, 0)
+    IF hIcon <> 0 THEN
+        DrawIconEx(memDC, 20, 16, hIcon, 32, 32, 0, 0, 3)
+        DestroyIcon(hIcon)
+    ENDIF
+
+    hFontTitle = CreateFontA(-16, 0, 0, 0, 700, 0, 0, 0, 0, 0, 0, 5, 0, "Verdana")
+    hFontSub   = CreateFontA(-11, 0, 0, 0, 400, 0, 0, 0, 0, 0, 0, 5, 0, "Verdana")
+    hFontLabel = CreateFontA(-12, 0, 0, 0, 700, 0, 0, 0, 0, 0, 0, 5, 0, "Tahoma")
+    hFontBar   = CreateFontA(-12, 0, 0, 0, 700, 0, 0, 0, 0, 0, 0, 5, 0, "Tahoma")
+    hFontLink  = CreateFontA(-11, 0, 0, 0, 400, 0, 0, 0, 0, 0, 0, 5, 0, "Verdana")
+
+    SetBkMode(memDC, 1)
+    SetTextColor(memDC, RGB_CYAN_ACCENT)
+    hOldFont = SelectObject(memDC, hFontTitle)
+    rcBox.left = 62 : rcBox.top = 14 : rcBox.right = 420 : rcBox.bottom = 34
+    DrawTextA(memDC, strTitle, -1, &rcBox, 0x00000020)
+    SetTextColor(memDC, RGB_TEXT_MUTED) : SelectObject(memDC, hFontSub)
+    rcBox.top = 36 : rcBox.bottom = 54 : DrawTextA(memDC, strSub, -1, &rcBox, 0x00000020)
+
+    ' Save DC State before viewport horizontal stage translation
+    SaveDC(memDC)
+
+    ' Render Viewport Stage Panels
+    ' ---------------------------------------------------------------------------
+    ' Render Panel 0 (About Panel - Left)
+    SetViewportOrgEx(memDC, offX - VIEWPORT_WIDTH, 0, NULL)
+    RenderAboutPanel(memDC)
+
+    ' Render Panel 2 (GDI Help Panel - Right)
+    SetViewportOrgEx(memDC, offX + VIEWPORT_WIDTH, 0, NULL)
+    RenderHelpPanel(memDC)
+    RenderCustomScrollbar(memDC, pMainGfx) ' <-- Pass memDC and pMainGfx directly
+
+    ' Render Panel 1 (Main Control Viewport - Center)
+    SetViewportOrgEx(memDC, offX, 0, NULL)
+
+    IF pMainGfx <> NULL THEN
+        GdipCreatePath(0, &pShadowPath)
+        IF pShadowPath <> NULL THEN
+            GdipAddPathArc(pShadowPath, 14.0, 72.0, 16.0, 16.0, 180.0, 90.0)
+            GdipAddPathArc(pShadowPath, 422.0 - 16.0, 72.0, 16.0, 16.0, 270.0, 90.0)
+            GdipAddPathArc(pShadowPath, 422.0 - 16.0, 335.0 - 16.0, 16.0, 16.0, 0.0, 90.0)
+            GdipAddPathArc(pShadowPath, 14.0, 335.0 - 16.0, 16.0, 16.0, 90.0, 90.0)
+            GdipClosePathFigure(pShadowPath)
+
+            GdipCreateSolidFill(ARGB_SHADOW_COLOR, &pBrushGlow)
+            IF pBrushGlow <> NULL THEN
+                GdipFillPath(pMainGfx, pBrushGlow, pShadowPath)
+                GdipDeleteBrush(pBrushGlow)
+            ENDIF
+            GdipDeletePath(pShadowPath)
+        ENDIF
+    ENDIF
+
+    SetTextColor(memDC, RGB_TEXT_WHITE) : SelectObject(memDC, hFontLabel)
+    rcBox.left = 20 : rcBox.top = 80 : rcBox.right = 220 : rcBox.bottom = 98
+    DrawTextA(memDC, strLbl1, -1, &rcBox, 0x00000020)
+    
+    rcBox.top = 165 : rcBox.bottom = 183 : DrawTextA(memDC, strLbl2, -1, &rcBox, 0x00000020)
+
+    IF pMainGfx <> NULL THEN
+        edit1Border = 0xFF3B291E : edit2Border = 0xFF3B291E
+        IF g_app.focusedEdit = 1 THEN edit1Border = ARGB_CYAN_GLOW
+        IF g_app.focusedEdit = 2 THEN edit2Border = ARGB_CYAN_GLOW
+        GdipCreateSolidFill(ARGB_EDIT_BG, &pBrushGlow)
+        GdipFillRectangleI(pMainGfx, pBrushGlow, 18, 98, 399, 23)
+        GdipFillRectangleI(pMainGfx, pBrushGlow, 18, 183, 399, 23)
+        GdipDeleteBrush(pBrushGlow)
+        GdipCreatePen1(edit1Border, 1.2, 2, &pPenGlow)
+        GdipDrawRectangleI(pMainGfx, pPenGlow, 18, 98, 399, 23)
+        GdipDeletePen(pPenGlow)
+        GdipCreatePen1(edit2Border, 1.2, 2, &pPenGlow)
+        GdipDrawRectangleI(pMainGfx, pPenGlow, 18, 183, 399, 23)
+        GdipDeletePen(pPenGlow)
+    ENDIF
+
+    btn1Bg = ARGB_HEADER_BG : IF g_app.hoverBtn = 1 THEN btn1Bg = 0xFF2A364F
+    DrawGdiPlusButton(pMainGfx, 20.0, 247.0, 110.0, 27.0, 5.0, btn1Bg, ARGB_CYAN_GLOW, RGB_CYAN_ACCENT, strBtn1, hFontLabel, memDC)
+
+    IF g_app.isProtectedMarker THEN
+        DrawGdiPlusButton(pMainGfx, 140.0, 247.0, 130.0, 27.0, 5.0, ARGB_BTN_DISABLED, 0xFF505050, RGB_TEXT_MUTED, strBtn2, hFontLabel, memDC)
+    ELSE
+        btn2Bg = 0xFF064E3B : IF g_app.hoverBtn = 2 THEN btn2Bg = ARGB_GREEN_BTN
+        DrawGdiPlusButton(pMainGfx, 140.0, 247.0, 130.0, 27.0, 5.0, btn2Bg, ARGB_GREEN_BTN, RGB_TEXT_WHITE, strBtn2, hFontLabel, memDC)
+    ENDIF
+
+    IF g_app.isProtectedMarker = 0 THEN
+        DrawGdiPlusButton(pMainGfx, 280.0, 247.0, 135.0, 27.0, 5.0, ARGB_BTN_DISABLED, 0xFF505050, RGB_TEXT_MUTED, strBtn3, hFontLabel, memDC)
+    ELSE
+        btn3Bg = 0xFF916A10 : IF g_app.hoverBtn = 3 THEN btn3Bg = ARGB_GOLD_BTN
+        DrawGdiPlusButton(pMainGfx, 280.0, 247.0, 135.0, 27.0, 5.0, btn3Bg, ARGB_GOLD_BTN, RGB_TEXT_WHITE, strBtn3, hFontLabel, memDC)
+    ENDIF
+
+    xdiv = INT((g_app.progressPos * barWidth) / 100)
+    rectFull.left = barX : rectFull.top = barY : rectFull.right = barX + xdiv : rectFull.bottom = barY + barHeight
+    rectEmpty.left = barX + xdiv : rectEmpty.top = barY : rectEmpty.right = barX + barWidth : rectEmpty.bottom = barY + barHeight
+    textX = barX + INT(barWidth / 2) : textY = barY + 5
+    SelectObject(memDC, hFontBar) : SetTextAlign(memDC, TA_CENTER)
+
+    IF g_app.alertFlash THEN
+        rectFull.left = barX : rectFull.top = barY : rectFull.right = barX + barWidth : rectFull.bottom = barY + barHeight
+        SetTextColor(memDC, RGB_TEXT_WHITE)
+        SetBkColor(memDC, RGB_ALERT_RED)
+        ExtTextOutA(memDC, textX, textY, ETO_CLIPPED | ETO_OPAQUE, &rectFull, g_app.statusMsg, LEN(g_app.statusMsg), 0)
+        IF pMainGfx <> NULL THEN : GdipCreatePen1(0xFFDC2626, 1.2, 2, &pPenGlow) : GdipDrawRectangleI(pMainGfx, pPenGlow, barX, barY, barWidth, barHeight) : GdipDeletePen(pPenGlow) : ENDIF
+    ELSE
+        IF pMainGfx <> NULL AND xdiv > 0 THEN
+            ptStart.X = FLOAT(barX) : ptStart.Y = 0.0
+            ptEnd.X = FLOAT(barX + barWidth) : ptEnd.Y = 0.0
+            GdipCreateLineBrush(&ptStart, &ptEnd, ARGB_HEADER_BG, ARGB_CYAN_GLOW, WrapModeTile, &pBrushGlow)
+            IF pBrushGlow <> NULL THEN
+                GdipFillRectangleI(pMainGfx, pBrushGlow, barX, barY, xdiv, barHeight)
+                GdipDeleteBrush(pBrushGlow)
+            ENDIF
+        ENDIF
+
+        IF xdiv < barWidth THEN
+            SetTextColor(memDC, RGB(184, 163, 148))
+            SetBkColor(memDC, RGB(21, 28, 44))
+            ExtTextOutA(memDC, textX, textY, ETO_CLIPPED | ETO_OPAQUE, &rectEmpty, g_app.statusMsg, LEN(g_app.statusMsg), 0)
+        ENDIF
+
+        IF xdiv > 0 THEN
+            SetTextColor(memDC, RGB_TEXT_WHITE)
+            SetBkMode(memDC, 1)
+            ExtTextOutA(memDC, textX, textY, ETO_CLIPPED, &rectFull, g_app.statusMsg, LEN(g_app.statusMsg), 0)
+        ENDIF
+
+        IF pMainGfx <> NULL THEN
+            GdipCreatePen1(ARGB_CYAN_GLOW, 1.0, 2, &pPenGlow)
+            GdipDrawRectangleI(pMainGfx, pPenGlow, barX, barY, barWidth, barHeight)
+            GdipDeletePen(pPenGlow)
+        ENDIF
+    ENDIF
+
+    ' Restore original DC viewport origin for fixed Footer
+    RestoreDC(memDC, -1)
+
+    ' ===========================================================================
+    ' FOOTER SECTION (Fixed Bottom Bar)
+    ' ===========================================================================
+    IF pMainGfx <> NULL THEN
+        ptStart.Y = 343.0 : ptEnd.Y = 365.0
+        GdipCreateLineBrush(&ptStart, &ptEnd, ARGB_FOOTER_TOP, ARGB_FOOTER_BOT, WrapModeTile, &pBrushGlow)
+        IF pBrushGlow <> NULL THEN : GdipFillRectangleI(pMainGfx, pBrushGlow, 0, 343, 440, 22) : GdipDeleteBrush(pBrushGlow) : ENDIF
+
+        GdipCreatePen1(ARGB_SCANLINE, 1.0, 2, &pScanPen)
+        IF pScanPen <> NULL THEN
+            FOR scanY = 345 TO 363 STEP 2
+                GdipDrawLineI(pMainGfx, pScanPen, 0, scanY, 440, scanY)
+            NEXT scanY
+            GdipDeletePen(pScanPen)
+        ENDIF
+    ENDIF
+
+    hPen = CreatePen(0, 1, RGB_PANEL_BORDER) : hOldPen = SelectObject(memDC, hPen)
+    MoveToEx(memDC, 0, 343, NULL) : LineToWin32(memDC, 440, 343)
+    SelectObject(memDC, hOldPen) : DeleteObject(hPen)
+
+    ' ---------------------------------------------------------------------------
+    ' Bottom-Left ESC Indicator (Rendered in Goldenrod when not on Main Panel)
+    ' ---------------------------------------------------------------------------
+    IF g_app.activePage <> PAGE_MAIN THEN
+        SelectObject(memDC, hFontLink)
+        SetBkMode(memDC, 1)
+        SetTextColor(memDC, RGB_GOLD_ACCENT) ' Goldenrod Accent
+        rcBox.left = 15 : rcBox.top = footerY : rcBox.right = 200 : rcBox.bottom = footerY + 20
+        DrawTextA(memDC, "Press <ESC> to go back", -1, &rcBox, 0)
+    ENDIF
+
+    ' ---------------------------------------------------------------------------
+    ' Bottom-Right Footer Viewport Switcher Links
+    ' ---------------------------------------------------------------------------
+    SelectObject(memDC, hFontLink) : SetTextAlign(memDC, 0)
+    GetTextExtentPoint32A(memDC, strFooter, LEN(strFooter), &szFull)
+    GetTextExtentPoint32A(memDC, sHelp, LEN(sHelp), &szH)
+    GetTextExtentPoint32A(memDC, sPipe, LEN(sPipe), &szP)
+    GetTextExtentPoint32A(memDC, sMail, LEN(sMail), &szM)
+    
+    footerX = 425 - szFull.cx
+    g_app.rcLinkHelp.left = footerX : g_app.rcLinkHelp.right = footerX + szH.cx : g_app.rcLinkHelp.top = footerY : g_app.rcLinkHelp.bottom = footerY+20
+    g_app.rcLinkMail.left = g_app.rcLinkHelp.right + szP.cx : g_app.rcLinkMail.right = g_app.rcLinkMail.left + szM.cx
+    g_app.rcLinkMail.top = footerY : g_app.rcLinkMail.bottom = footerY+20
+    g_app.rcLinkAbout.left = g_app.rcLinkMail.right + szP.cx : g_app.rcLinkAbout.right = 425
+    g_app.rcLinkAbout.top = footerY : g_app.rcLinkAbout.bottom = footerY+20
+
+    SetTextColor(memDC, RGB_TEXT_MUTED)
+    rcBox.left = footerX : rcBox.top = footerY : rcBox.right = 440 : rcBox.bottom = footerY+20
+    DrawTextA(memDC, strFooter, -1, &rcBox, 0)
+
+    GetTextExtentPoint32A(memDC, "H", 1, &szH1)
+    GetTextExtentPoint32A(memDC, "M", 1, &szM1)
+    GetTextExtentPoint32A(memDC, "A", 1, &szA1)
+    underlineY = footerY + 14
+
+    hPen = CreatePen(0, 1, RGB_TEXT_MUTED)
+    hOldPen = SelectObject(memDC, hPen)
+    
+    MoveToEx(memDC, g_app.rcLinkHelp.left, underlineY, NULL) : LineToWin32(memDC, g_app.rcLinkHelp.left + szH1.cx, underlineY)
+    MoveToEx(memDC, g_app.rcLinkMail.left, underlineY, NULL) : LineToWin32(memDC, g_app.rcLinkMail.left + szM1.cx, underlineY)
+    MoveToEx(memDC, g_app.rcLinkAbout.left, underlineY, NULL) : LineToWin32(memDC, g_app.rcLinkAbout.left + szA1.cx, underlineY)
+    
+    SelectObject(memDC, hOldPen) : DeleteObject(hPen)
+
+    IF g_app.hoverLink > 0 THEN
+        SetTextColor(memDC, RGB_CYAN_ACCENT)
+        hPen = CreatePen(0, 1, RGB_CYAN_ACCENT)
+        hOldPen = SelectObject(memDC, hPen)
+        
+        IF g_app.hoverLink = 1 THEN
+            rcBox.left = g_app.rcLinkHelp.left : rcBox.right = g_app.rcLinkHelp.right : DrawTextA(memDC, sHelp, -1, &rcBox, 0)
+            MoveToEx(memDC, g_app.rcLinkHelp.left, underlineY, NULL) : LineToWin32(memDC, g_app.rcLinkHelp.left + szH1.cx, underlineY)
+        ELSEIF g_app.hoverLink = 2 THEN
+            rcBox.left = g_app.rcLinkMail.left : rcBox.right = g_app.rcLinkMail.right : DrawTextA(memDC, sMail, -1, &rcBox, 0)
+            MoveToEx(memDC, g_app.rcLinkMail.left, underlineY, NULL) : LineToWin32(memDC, g_app.rcLinkMail.left + szM1.cx, underlineY)
+        ELSEIF g_app.hoverLink = 3 THEN
+            rcBox.left = g_app.rcLinkAbout.left : rcBox.right = g_app.rcLinkAbout.right : DrawTextA(memDC, sAbout, -1, &rcBox, 0)
+            MoveToEx(memDC, g_app.rcLinkAbout.left, underlineY, NULL) : LineToWin32(memDC, g_app.rcLinkAbout.left + szA1.cx, underlineY)
+        ENDIF
+        
+        SelectObject(memDC, hOldPen) : DeleteObject(hPen)
+    ENDIF
+
+    IF pMainGfx <> NULL THEN GdipDeleteGraphics(pMainGfx)
+    SelectObject(memDC, hOldFont) : DeleteObject(hFontTitle) : DeleteObject(hFontSub) : DeleteObject(hFontLabel) : DeleteObject(hFontBar) : DeleteObject(hFontLink)
+    BitBlt(hdc, 0, 0, 440, 395, memDC, 0, 0, 0x00CC0020)
+    SelectObject(memDC, hOldBmp) : DeleteObject(hBmp) : DeleteDC(memDC)
+ENDSUB
+
+' ===============================================================================
+' VIEWPORT SLIDING ANIMATION ENGINE
+' ===============================================================================
+SUB SlideViewportToPage(INT targetPage)
+    INT startX = 0, targetX = 0, i = 0
+    UINT hFileEdit, hPassEdit, hZipChk, hShowChk
+
+    IF g_app.activePage = targetPage OR g_app.isAnimating THEN RETURN
+    g_app.isAnimating = 1
+
+    hFileEdit = GETCONTROLHANDLE(g_app.win, ID_FILE_EDIT)
+    hPassEdit = GETCONTROLHANDLE(g_app.win, ID_PASS_EDIT)
+    hZipChk   = GETCONTROLHANDLE(g_app.win, ID_ZIPFIRST_CHK)
+    hShowChk  = GETCONTROLHANDLE(g_app.win, ID_SHOWPASS_CHK)
+
+    ' Calculate target stage X offset
+    IF targetPage = PAGE_HELP THEN
+        targetX = -VIEWPORT_WIDTH
+    ELSEIF targetPage = PAGE_ABOUT THEN
+        targetX = VIEWPORT_WIDTH
+    ELSE
+        targetX = 0
+    ENDIF
+
+    startX = g_app.stageX
+
+    ' Smooth 10-frame sliding loop (~100ms)
+    FOR i = 1 TO 10
+        g_app.stageX = startX + INT(((targetX - startX) * i) / 10)
+        
+        ' Synchronize positions of child Edit & Checkbox controls on Panel 1
+        IF hFileEdit <> 0 THEN SetWindowPos(hFileEdit, 0, 20 + g_app.stageX, 100, 395, 19, SWP_NOZORDER)
+        IF hZipChk <> 0   THEN SetWindowPos(hZipChk,   0, 22 + g_app.stageX, 123, 200, 18, SWP_NOZORDER)
+        IF hPassEdit <> 0 THEN SetWindowPos(hPassEdit, 0, 20 + g_app.stageX, 185, 395, 19, SWP_NOZORDER)
+        IF hShowChk <> 0  THEN SetWindowPos(hShowChk,  0, 22 + g_app.stageX, 213, 130, 18, SWP_NOZORDER)
+
+        InvalidateRect(g_app.win.hwnd, NULL, 0)
+        UpdateWindow(g_app.win.hwnd)
+        Sleep(8)
+    NEXT i
+
+    ' Hide/Show child controls via Win32 API (SW_SHOW = 5, SW_HIDE = 0)
+    IF targetPage = PAGE_MAIN THEN
+        IF hFileEdit <> 0 THEN Win32ShowWindow(hFileEdit, 5)
+        IF hPassEdit <> 0 THEN Win32ShowWindow(hPassEdit, 5)
+        IF hZipChk <> 0   THEN Win32ShowWindow(hZipChk, 5)
+        IF hShowChk <> 0  THEN Win32ShowWindow(hShowChk, 5)
+    ELSE
+        IF hFileEdit <> 0 THEN Win32ShowWindow(hFileEdit, 0)
+        IF hPassEdit <> 0 THEN Win32ShowWindow(hPassEdit, 0)
+        IF hZipChk <> 0   THEN Win32ShowWindow(hZipChk, 0)
+        IF hShowChk <> 0  THEN Win32ShowWindow(hShowChk, 0)
+    ENDIF
+
+    g_app.activePage = targetPage
+    g_app.isAnimating = 0
+
+    ' Reset and trigger Scroller when sliding to About Page
+    IF targetPage = PAGE_ABOUT THEN
+        g_app.aboutScrollY = 0 ' Reset starting scroll offset
+        SetTimer(g_app.win.hwnd, 101, 30, NULL) ' Smooth 30ms scroll tick
+    ELSE
+        KillTimer(g_app.win.hwnd, 101)
+    ENDIF
+
+    InvalidateRect(g_app.win.hwnd, NULL, 1)
+ENDSUB
+
+' ===============================================================================
+' MULTI-THREADED WORKER PIPELINE (With Header Marker & Disk Pre-Check)
+' ===============================================================================
+' MAIN THREADED FILE STREAM PROCESSOR
+' Handles file streams in 1 MB chunks with hardware CFB acceleration and fallback.
+' ===============================================================================
+SUB ProcessFileThreaded(password AS STRING, encryptMode AS INT)
+    STRING fPath, tmpPath, fileNameOnly, targetWorkPath
+    STRING gzStagePath = ""
+    INT i, pwdLen, pathLen, nameLen, flashIdx
+    DOUBLE totalFileSize = 0.0, bytesProcessed = 0.0
+    INT bytesRead = 0, bytesWritten = 0
+    INT hFileIn = 0, hFileOut = 0
+    INT blockOffset = 0, currentBlock = 0
+    INT alignBytes = 0
+    
+    ' Local Pointers for ASM engine (initialized to NULL first)
+    POINTER pBuf = NULL
+    POINTER pCFB = NULL
+    POINTER pKey = NULL
+
+    ' 1. Increased buffer size to 1 MB for high-throughput streaming I/O
+    INT chunkSize = 1048576 
+    INT lastReportPos = -1
+    
+    INT bIn, bOut
+    POINTER pCFBByte, pChunkByte
+    
+    POINTER pChunkBuf = NULL
+    DEF nextCFB[32] AS CHAR
+    DEF markerHeader[16] AS CHAR
+
+    ' RGUARD256 Header Signature Definition (16 bytes)
+    markerHeader[0] = 0x52 : markerHeader[1] = 0x47 : markerHeader[2] = 0x55 : markerHeader[3] = 0x41
+    markerHeader[4] = 0x52 : markerHeader[5] = 0x44 : markerHeader[6] = 0x32 : markerHeader[7] = 0x35
+    markerHeader[8] = 0x36 : markerHeader[9] = 0xFF : markerHeader[10]= 0xFE : markerHeader[11]= 0x00
+    markerHeader[12]= 0x00 : markerHeader[13]= 0x00 : markerHeader[14]= 0x00 : markerHeader[15]= 0x00
+
+    fPath = GETCONTROLTEXT(g_app.win, ID_FILE_EDIT)
+    pathLen = LEN(fPath)
+    pwdLen = LEN(password)
+
+    ' 2. File Existence & System Path Guard Checks
+    IF GetFileAttributesA(fPath) = INVALID_FILE_ATTRIBUTES THEN
+        g_app.statusMsg = "ERROR: Target file does not exist on disk!"
+        LogAction("ProcessFile Error: File not found on disk: " + fPath)
+        FOR flashIdx = 1 TO 3
+            g_app.alertFlash = 1
+            InvalidateRect(g_app.win.hwnd, NULL, 0)
+            UpdateWindow(g_app.win.hwnd)
+            Sleep(350)
+            g_app.alertFlash = 0
+            InvalidateRect(g_app.win.hwnd, NULL, 0)
+            UpdateWindow(g_app.win.hwnd)
+            Sleep(200)
+        NEXT flashIdx
+        GOTO CleanupAndUnlock
+    ENDIF
+
+    IF IsSystemPath(fPath) THEN
+        g_app.statusMsg = "ACCESS DENIED: Protected System Directory File!"
+        LogAction("ACCESS DENIED: Attempted operation on protected system path: " + fPath)
+        FOR flashIdx = 1 TO 3
+            g_app.alertFlash = 1
+            InvalidateRect(g_app.win.hwnd, NULL, 0)
+            UpdateWindow(g_app.win.hwnd)
+            Sleep(350)
+            g_app.alertFlash = 0
+            InvalidateRect(g_app.win.hwnd, NULL, 0)
+            UpdateWindow(g_app.win.hwnd)
+            Sleep(200)
+        NEXT flashIdx
+        GOTO CleanupAndUnlock
+    ENDIF
+
+    targetWorkPath = fPath
+
+    ' 3. Optional ZLIB Pre-compression Stage (100% Exact Progress Stream)
+    IF encryptMode AND g_app.hasZlibDll AND GETSTATE(g_app.win, ID_ZIPFIRST_CHK) THEN
+        g_app.statusMsg = "Compressing stream via ZLIB: 0%"
+        LogAction("ZIP First enabled: Pre-compressing " + fPath + " via ZLIB.")
+        InvalidateRect(g_app.win.hwnd, NULL, 0)
+        
+        gzStagePath = fPath + ".gzstage"
+        
+        ' Fetch source file size for progress calculations
+        HANDLE hTempCheck = CreateFileA(fPath, GENERIC_READ, FILE_SHARE_READ, 0, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, 0)
+        DOUBLE gzSrcSize = GetFileSize64(hTempCheck)
+        CloseHandle(hTempCheck)
+
+        IF CompressFileGzChunked(fPath, gzStagePath, gzSrcSize) = 1 THEN
+            targetWorkPath = gzStagePath
+            LogAction("ZLIB Pre-compression succeeded: " + gzStagePath)
+        ELSE
+            g_app.statusMsg = "Error: ZLIB Compression failed!"
+            LogAction("Error: ZLIB Compression failed on " + fPath)
+            DELETEFILE gzStagePath
+            InvalidateRect(g_app.win.hwnd, NULL, 0)
+            GOTO CleanupAndUnlock
+        ENDIF
+    ENDIF
+
+    tmpPath = fPath + ".tmp"
+    DELETEFILE tmpPath
+
+    fileNameOnly = GetFileNameOnly(fPath)
+    nameLen = LEN(fileNameOnly)
+
+    IF encryptMode THEN
+        LogAction("Starting Protect Operation on: " + targetWorkPath)
+    ELSE
+        LogAction("Starting Restore Operation on: " + targetWorkPath)
+    ENDIF
+
+    ' 4. Key Expansion & Initial CFB Vector Construction
+    StretchKey(password, g_app.pKeyArray)
+    KeySched()
+
+    FOR i = 0 TO BLOCKBYTES - 1
+        pCFBByte = g_app.pCFBBuf + i
+        IF i < nameLen THEN
+            INT ch = ASC(MID$(fileNameOnly, i + 1, 1))
+            IF ch >= 97 AND ch <= 122 THEN ch = ch - 32
+            #<CHAR>pCFBByte = ch
+        ELSE
+            #<CHAR>pCFBByte = 0
+        ENDIF
+    NEXT i
+
+    hFileIn = CreateFileA(targetWorkPath, GENERIC_READ, FILE_SHARE_READ, 0, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, 0)
+    IF hFileIn = INVALID_HANDLE_VALUE THEN
+        g_app.statusMsg = "Error: Failed to open source file (Locked or Access Denied)."
+        LogAction("Error: CreateFileA failed to open source file: " + targetWorkPath)
+        IF LEN(gzStagePath) > 0 THEN DELETEFILE gzStagePath
+        WipeBuffer(g_app.pKeyArray, 2048)
+        WipeBuffer(g_app.pCFBBuf, 128)
+        InvalidateRect(g_app.win.hwnd, NULL, 0)
+        GOTO CleanupAndUnlock
+    ENDIF
+
+    totalFileSize = GetFileSize64(hFileIn)
+
+    IF HasSufficientDiskSpace(targetWorkPath, totalFileSize) = 0 THEN
+        CloseHandle(hFileIn)
+        g_app.statusMsg = "ERROR: Insufficient free disk space for processing!"
+        LogAction("Error: Aborted operation due to insufficient free disk space.")
+        IF LEN(gzStagePath) > 0 THEN DELETEFILE gzStagePath
+        WipeBuffer(g_app.pKeyArray, 2048)
+        WipeBuffer(g_app.pCFBBuf, 128)
+        FOR flashIdx = 1 TO 3
+            g_app.alertFlash = 1
+            InvalidateRect(g_app.win.hwnd, NULL, 0)
+            UpdateWindow(g_app.win.hwnd)
+            Sleep(350)
+            g_app.alertFlash = 0
+            InvalidateRect(g_app.win.hwnd, NULL, 0)
+            UpdateWindow(g_app.win.hwnd)
+            Sleep(200)
+        NEXT flashIdx
+        GOTO CleanupAndUnlock
+    ENDIF
+
+    IF (encryptMode = 0) AND (g_app.isProtectedMarker = 1) THEN
+        DEF dummyHead[16] AS CHAR
+        ReadFile(hFileIn, &dummyHead, 16, &bytesRead, 0)
+        totalFileSize = totalFileSize - 16.0
+    ENDIF
+
+    IF totalFileSize <= 0.0 THEN
+        CloseHandle(hFileIn)
+        g_app.statusMsg = "Notice: Target file is empty or unreadable."
+        LogAction("Notice: Target file is empty or unreadable: " + targetWorkPath)
+        IF LEN(gzStagePath) > 0 THEN DELETEFILE gzStagePath
+        WipeBuffer(g_app.pKeyArray, 2048)
+        WipeBuffer(g_app.pCFBBuf, 128)
+        InvalidateRect(g_app.win.hwnd, NULL, 0)
+        GOTO CleanupAndUnlock
+    ENDIF
+
+    ' 5. Buffer Allocation (1 MB)
+    IF ALLOCMEM(pChunkBuf, 1, chunkSize) <> 0 THEN
+        CloseHandle(hFileIn)
+        g_app.statusMsg = "Error: Out of memory allocating 1MB buffer!"
+        IF LEN(gzStagePath) > 0 THEN DELETEFILE gzStagePath
+        WipeBuffer(g_app.pKeyArray, 2048)
+        WipeBuffer(g_app.pCFBBuf, 128)
+        InvalidateRect(g_app.win.hwnd, NULL, 0)
+        GOTO CleanupAndUnlock
+    ENDIF
+
+    hFileOut = CreateFileA(tmpPath, GENERIC_WRITE, 0, 0, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, 0)
+    IF hFileOut = INVALID_HANDLE_VALUE THEN
+        CloseHandle(hFileIn)
+        FREEMEM pChunkBuf
+        IF LEN(gzStagePath) > 0 THEN DELETEFILE gzStagePath
+        g_app.statusMsg = "Error: Failed to create temporary output file."
+        LogAction("Error: CreateFileA failed for temp file: " + tmpPath)
+        InvalidateRect(g_app.win.hwnd, NULL, 0)
+        GOTO CleanupAndUnlock
+    ENDIF
+
+    IF encryptMode THEN
+        WriteFile(hFileOut, &markerHeader, 16, &bytesWritten, 0)
+    ENDIF
+
+    ' 6. High-Speed Streaming Loop
+    bytesProcessed = 0.0
+    DO
+        bytesRead = 0
+        IF ReadFile(hFileIn, pChunkBuf, chunkSize, &bytesRead, 0) <> 0 AND bytesRead > 0 THEN
+            
+            ' Fast Path: Inlined Assembly Hardware CFB Pipeline
+            IF g_app.hasAESNI THEN
+                ' Pack parameters into global memory slots before _asm
+                g_aesArgs[0] = pChunkBuf
+                g_aesArgs[1] = (bytesRead + 15) & ~15
+                g_aesArgs[2] = g_app.pCFBBuf
+                g_aesArgs[3] = g_app.pKeyArray
+                g_aesArgs[4] = encryptMode
+
+                _asm
+                    push eax
+                    push ebx
+                    push ecx
+                    push edx
+                    push esi
+
+                    ; Fetch parameters from global memory array
+                    mov eax, dword [g_aesArgs]        ; Buffer pointer
+                    mov ecx, dword [g_aesArgs + 4]    ; alignBytes
+                    mov ebx, dword [g_aesArgs + 8]    ; pCFB
+                    mov edx, dword [g_aesArgs + 12]   ; pKey
+                    mov esi, dword [g_aesArgs + 16]   ; encryptMode
+
+                ._cfb_block_loop:
+                    cmp ecx, 0
+                    jle ._cfb_done
+
+                    movdqu xmm0, [ebx]
+
+                    movdqu xmm1, [edx]
+                    pxor xmm0, xmm1
+
+                    movdqu xmm1, [edx + 16]
+                    db 0x66, 0x0F, 0x38, 0xDC, 0xC1
+                    movdqu xmm1, [edx + 32]
+                    db 0x66, 0x0F, 0x38, 0xDC, 0xC1
+                    movdqu xmm1, [edx + 48]
+                    db 0x66, 0x0F, 0x38, 0xDC, 0xC1
+                    movdqu xmm1, [edx + 64]
+                    db 0x66, 0x0F, 0x38, 0xDC, 0xC1
+                    movdqu xmm1, [edx + 80]
+                    db 0x66, 0x0F, 0x38, 0xDC, 0xC1
+                    movdqu xmm1, [edx + 96]
+                    db 0x66, 0x0F, 0x38, 0xDC, 0xC1
+                    movdqu xmm1, [edx + 112]
+                    db 0x66, 0x0F, 0x38, 0xDC, 0xC1
+                    movdqu xmm1, [edx + 128]
+                    db 0x66, 0x0F, 0x38, 0xDC, 0xC1
+                    movdqu xmm1, [edx + 144]
+                    db 0x66, 0x0F, 0x38, 0xDC, 0xC1
+                    movdqu xmm1, [edx + 160]
+                    db 0x66, 0x0F, 0x38, 0xDC, 0xC1
+                    movdqu xmm1, [edx + 176]
+                    db 0x66, 0x0F, 0x38, 0xDC, 0xC1
+                    movdqu xmm1, [edx + 192]
+                    db 0x66, 0x0F, 0x38, 0xDC, 0xC1
+                    movdqu xmm1, [edx + 208]
+                    db 0x66, 0x0F, 0x38, 0xDC, 0xC1
+
+                    movdqu xmm1, [edx + 224]
+                    db 0x66, 0x0F, 0x38, 0xDD, 0xC1
+
+                    movdqu xmm2, [eax]
+
+                    cmp esi, 0
+                    je ._cfb_decrypt_mode
+
+                ._cfb_encrypt_mode:
+                    pxor xmm0, xmm2
+                    movdqu [eax], xmm0
+                    movdqu [ebx], xmm0
+                    jmp ._cfb_next_step
+
+                ._cfb_decrypt_mode:
+                    movdqu xmm3, xmm2
+                    pxor xmm0, xmm2
+                    movdqu [eax], xmm0
+                    movdqu [ebx], xmm3
+
+                ._cfb_next_step:
+                    add eax, 16
+                    sub ecx, 16
+                    jmp ._cfb_block_loop
+
+                ._cfb_done:
+                    pop esi
+                    pop edx
+                    pop ecx
+                    pop ebx
+                    pop eax
+                _endasm
+
+            ELSE
+                ' Software Fallback Loop (Original nested BASIC loop)
+                INT chunkBlocks = INT((bytesRead + BLOCKBYTES - 1) / BLOCKBYTES)
+                
+                FOR currentBlock = 0 TO chunkBlocks - 1
+                    blockOffset = currentBlock * BLOCKBYTES
+                    CipherEngine()
+
+                    FOR i = 0 TO BLOCKBYTES - 1
+                        INT byteIdx = blockOffset + i
+                        IF byteIdx < bytesRead THEN
+                            pChunkByte = pChunkBuf + byteIdx
+                            pCFBByte = g_app.pCFBBuf + i
+                            
+                            bIn = #<CHAR>pChunkByte & 0xFF
+                            bOut = (bIn || (#<CHAR>pCFBByte & 0xFF)) & 0xFF
+                            
+                            #<CHAR>pChunkByte = bOut
+
+                            IF encryptMode THEN 
+                                nextCFB[i] = bOut
+                            ELSE 
+                                nextCFB[i] = bIn
+                            ENDIF
+                        ELSE
+                            nextCFB[i] = 0
+                        ENDIF
+                    NEXT i
+
+                    FOR i = 0 TO BLOCKBYTES - 1
+                        pCFBByte = g_app.pCFBBuf + i
+                        #<CHAR>pCFBByte = nextCFB[i]
+                    NEXT i
+                NEXT currentBlock
+            ENDIF
+
+            WriteFile(hFileOut, pChunkBuf, bytesRead, &bytesWritten, 0)
+
+            bytesProcessed = bytesProcessed + bytesRead
+            g_app.progressPos = INT((bytesProcessed * 100.0) / totalFileSize)
+            
+            ' Throttled UI Updates: Redraw window ONLY when progress percentage changes
+            IF g_app.progressPos <> lastReportPos THEN
+                lastReportPos = g_app.progressPos
+                IF encryptMode THEN
+                    g_app.statusMsg = "Protecting Stream: " + STR$(g_app.progressPos) + "%"
+                ELSE
+                    g_app.statusMsg = "Restoring Stream: " + STR$(g_app.progressPos) + "%"
+                ENDIF
+                
+                InvalidateRect(g_app.win.hwnd, NULL, 0)
+            ENDIF
+        ENDIF
+    UNTIL bytesRead <= 0
+
+    CloseHandle(hFileIn)
+    SetEndOfFile(hFileOut)
+    CloseHandle(hFileOut)
+    FREEMEM pChunkBuf
+
+    ' 7. Post-Processing: ZLIB Decompression Check
+    IF (encryptMode = 0) AND (totalFileSize >= 2.0) THEN
+        hFileIn = CreateFileA(tmpPath, GENERIC_READ, FILE_SHARE_READ, 0, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, 0)
+        IF hFileIn <> INVALID_HANDLE_VALUE THEN
+            
+            ' If the decrypted file starts with our 16-byte marker header, skip it first
+            DEF checkHeader[18] AS CHAR
+            ReadFile(hFileIn, &checkHeader, 18, &bytesRead, 0)
+            CloseHandle(hFileIn)
+
+            INT isGzip = 0
+            
+            ' Case A: Direct GZIP header at offset 0 (0x1F, 0x8B)
+            IF (checkHeader[0] & 0xFF) = 0x1F AND (checkHeader[1] & 0xFF) = 0x8B THEN
+                isGzip = 1
+            ' Case B: GZIP header sitting right after 16-byte marker header (offset 16)
+            ELSEIF (checkHeader[16] & 0xFF) = 0x1F AND (checkHeader[17] & 0xFF) = 0x8B THEN
+                isGzip = 1
+            ENDIF
+
+            IF isGzip THEN
+                g_app.statusMsg = "Decompressing ZLIB stream..."
+                LogAction("GZIP header detected on restored stream. Expanding via ZLIB...")
+                InvalidateRect(g_app.win.hwnd, NULL, 0)
+                
+                STRING decompPath = fPath + ".decomp"
+                IF ExpandFileGzWin32(tmpPath, decompPath) = 1 THEN
+                    DELETEFILE tmpPath
+                    COPYFILE decompPath, tmpPath, 0
+                    DELETEFILE decompPath
+                    LogAction("ZLIB Post-decompression succeeded.")
+                ELSE
+                    LogAction("Warning: ZLIB Decompression check failed or skipped.")
+                ENDIF
+            ENDIF
+        ENDIF
+    ENDIF
+
+    ' 8. Secure Shred & Replace Operations
+    FastShredFileWin32(fPath, totalFileSize)
+
+    IF COPYFILE(tmpPath, fPath, 0) <> 0 THEN
+        DELETEFILE tmpPath
+        IF LEN(gzStagePath) > 0 THEN DELETEFILE gzStagePath
+        g_app.progressPos = 100
+        IF encryptMode THEN
+            g_app.statusMsg = "SUCCESS: Protected (100%)."
+            LogAction("SUCCESS: Protected file successfully: " + fPath)
+        ELSE
+            g_app.statusMsg = "SUCCESS: Restored (100%)."
+            LogAction("SUCCESS: Restored file successfully: " + fPath)
+        ENDIF
+        CheckFileStatusAndMarker(fPath)
+        InvalidateRect(g_app.win.hwnd, NULL, 0)
+    ELSE
+        IF LEN(gzStagePath) > 0 THEN DELETEFILE gzStagePath
+        g_app.statusMsg = "Warning: Saved output to " + tmpPath
+        LogAction("Warning: COPYFILE failed to replace original file. Temporary output saved at: " + tmpPath)
+        InvalidateRect(g_app.win.hwnd, NULL, 0)
+    ENDIF
+
+    WipeBuffer(g_app.pKeyArray, 2048)
+    WipeBuffer(g_app.pCFBBuf, 128)
+    WipeBuffer(&nextCFB, 32)
+
+LABEL CleanupAndUnlock
+    EnableWindow(GETCONTROLHANDLE(g_app.win, ID_FILE_EDIT), 1)
+    EnableWindow(GETCONTROLHANDLE(g_app.win, ID_PASS_EDIT), 1)
+    IF g_app.hasZlibDll THEN EnableWindow(GETCONTROLHANDLE(g_app.win, ID_ZIPFIRST_CHK), 1)
+    EnableWindow(GETCONTROLHANDLE(g_app.win, ID_SHOWPASS_CHK), 1)
+    g_app.isProcessing = 0
+ENDSUB
+
+SUB BackgroundThreadWorker(POINTER pParam), INT
+    ProcessFileThreaded(g_ThreadData.password, g_ThreadData.encryptMode)
+    RETURN 0
+ENDSUB
+
+SUB StartWorkerThread(STRING password, INT encryptMode)
+    IF g_app.isProcessing THEN RETURN
+
+    STRING fPath = GETCONTROLTEXT(g_app.win, ID_FILE_EDIT)
+    INT flashIdx = 0
+
+    IF (LEN(fPath) = 0) OR (GetFileAttributesA(fPath) = INVALID_FILE_ATTRIBUTES) THEN
+        g_app.statusMsg = "ERROR: Target file does not exist on disk!"
+        LogAction("StartWorkerThread Error: File missing on disk: " + fPath)
+        FOR flashIdx = 1 TO 3
+            g_app.alertFlash = 1
+            InvalidateRect(g_app.win.hwnd, NULL, 0)
+            UpdateWindow(g_app.win.hwnd)
+            Sleep(350)
+            g_app.alertFlash = 0
+            InvalidateRect(g_app.win.hwnd, NULL, 0)
+            UpdateWindow(g_app.win.hwnd)
+            Sleep(200)
+        NEXT flashIdx
+        RETURN
+    ENDIF
+
+    EnableWindow(GETCONTROLHANDLE(g_app.win, ID_FILE_EDIT), 0)
+    EnableWindow(GETCONTROLHANDLE(g_app.win, ID_PASS_EDIT), 0)
+    EnableWindow(GETCONTROLHANDLE(g_app.win, ID_ZIPFIRST_CHK), 0)
+    EnableWindow(GETCONTROLHANDLE(g_app.win, ID_SHOWPASS_CHK), 0)
+
+    g_app.isProcessing = 1
+    g_ThreadData.password = password
+    g_ThreadData.encryptMode = encryptMode
+
+    INT threadId = 0
+    CreateThread(NULL, 0, &BackgroundThreadWorker, NULL, 0, &threadId)
+ENDSUB
+
+' ===============================================================================
+' EXACT PROGRESS ZLIB GZIP COMPRESSOR
+' Reads source file in 1 MB chunks, compresses via zlib.dll, and provides
+' exact uncompressed byte progress updates to the UI.
+' ===============================================================================
+' ===============================================================================
+' EXACT PROGRESS ZLIB GZIP COMPRESSOR (STRICT IWBASIC SYNTAX)
+' ===============================================================================
+SUB CompressFileGzChunked(srcPath AS STRING, destPath AS STRING, totalFileSize AS DOUBLE), INT
+    INT hSrc = 0, hDest = 0
+    INT bytesRead = 0, bytesWritten = 0, ret = 0
+    DOUBLE bytesProcessed = 0.0
+    INT lastReportPos = -1
+    
+    POINTER pInBuf = NULL
+    POINTER pOutBuf = NULL
+    
+    INT bufSize = 1048576  ' 1 MB RAM Buffers
+    z_stream strm
+    
+    ' Null-terminated C-string version buffer in RAM
+    DEF zVer[8] AS CHAR
+    zVer[0] = ASC("1") : zVer[1] = ASC(".") : zVer[2] = ASC("2") : zVer[3] = ASC(".")
+    zVer[4] = ASC("1") : zVer[5] = ASC("1") : zVer[6] = 0
+
+    hSrc = CreateFileA(srcPath, GENERIC_READ, FILE_SHARE_READ, 0, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, 0)
+    IF hSrc = INVALID_HANDLE_VALUE THEN RETURN 0
+    
+    hDest = CreateFileA(destPath, GENERIC_WRITE, 0, 0, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, 0)
+    IF hDest = INVALID_HANDLE_VALUE THEN
+        CloseHandle(hSrc)
+        RETURN 0
+    ENDIF
+
+    IF ALLOCMEM(pInBuf, 1, bufSize) <> 0 OR ALLOCMEM(pOutBuf, 1, bufSize) <> 0 THEN
+        CloseHandle(hSrc)
+        CloseHandle(hDest)
+        IF pInBuf THEN FREEMEM pInBuf
+        IF pOutBuf THEN FREEMEM pOutBuf
+        RETURN 0
+    ENDIF
+
+    ' Zero-fill strm structure memory to prevent bad pointer calls
+    WipeBuffer(&strm, LEN(strm))
+
+    ' Initialize zlib with GZIP header mode (MAX_WBITS + 16 = 31)
+    ' Pass parameters strictly as defined in DECLARE
+    ret = deflateInit2_(&strm, 6, Z_DEFLATED, 31, 8, 0, &zVer, LEN(strm))
+    IF ret <> Z_OK THEN
+        CloseHandle(hSrc)
+        CloseHandle(hDest)
+        FREEMEM pInBuf
+        FREEMEM pOutBuf
+        RETURN 0
+    ENDIF
+
+    DO
+        bytesRead = 0
+        IF ReadFile(hSrc, pInBuf, bufSize, &bytesRead, 0) <> 0 AND bytesRead > 0 THEN
+            strm.next_in = pInBuf
+            strm.avail_in = bytesRead
+            
+            INT flushFlag = Z_NO_FLUSH
+            IF bytesRead < bufSize THEN flushFlag = Z_FINISH
+
+            DO
+                strm.next_out = pOutBuf
+                strm.avail_out = bufSize
+                
+                ret = deflate(&strm, flushFlag)
+                INT haveWrite = bufSize - strm.avail_out
+                
+                IF haveWrite > 0 THEN
+                    WriteFile(hDest, pOutBuf, haveWrite, &bytesWritten, 0)
+                ENDIF
+            UNTIL strm.avail_out <> 0
+
+            ' Update exact uncompressed byte progress
+            bytesProcessed = bytesProcessed + bytesRead
+            IF totalFileSize > 0.0 THEN
+                g_app.progressPos = INT((bytesProcessed * 100.0) / totalFileSize)
+                
+                IF g_app.progressPos <> lastReportPos THEN
+                    lastReportPos = g_app.progressPos
+                    g_app.statusMsg = "Compressing Stream (ZLIB): " + STR$(g_app.progressPos) + "%"
+                    InvalidateRect(g_app.win.hwnd, NULL, 0)
+                ENDIF
+            ENDIF
+        ENDIF
+    UNTIL bytesRead <= 0
+
+    deflateEnd(&strm)
+    CloseHandle(hSrc)
+    CloseHandle(hDest)
+    FREEMEM pInBuf
+    FREEMEM pOutBuf
+
+    RETURN 1
+ENDSUB
+
+SUB GetFileNameOnly(fullPath AS STRING), STRING
+    INT i, pLen = LEN(fullPath)
+    
+    FOR i = pLen TO 1 STEP -1
+        INT ch = ASC(MID$(fullPath, i, 1))
+        IF ch = 92 OR ch = 47 THEN RETURN MID$(fullPath, i + 1)
+    NEXT i
+    
+    RETURN fullPath
+ENDSUB
+
+SUB IsSystemPath(fPath AS STRING), INT
+    STRING upperPath = UCASE$(fPath)
+    STRING slash = CHR$(92)
+    STRING targetWin = slash + "WINDOWS" + slash
+    STRING targetProg = slash + "PROGRAM FILES" + slash
+    STRING targetProg86 = slash + "PROGRAM FILES (X86)" + slash
+    STRING targetSysVol = slash + "SYSTEM VOLUME INFORMATION" + slash
+    STRING targetTemp = slash + "APPDATA" + slash + "LOCAL" + slash + "TEMP" + slash
+    STRING driveWin = "C:" + slash + "WINDOWS"
+
+    IF INSTR(upperPath, targetWin) > 0 OR LEFT$(upperPath, 10) = driveWin THEN RETURN 1
+    IF INSTR(upperPath, targetProg) > 0 OR INSTR(upperPath, targetProg86) > 0 THEN RETURN 1
+    IF INSTR(upperPath, targetSysVol) > 0 THEN RETURN 1
+    IF INSTR(upperPath, targetTemp) > 0 THEN RETURN 1
+    
+    RETURN 0
+ENDSUB
+
+' ===============================================================================
+' NATIVE SUBCLASS WNDPROC (Unified Navigation, Hotkeys & Mouse Control)
+' ===============================================================================
+
+SUB SubclassProc(hwnd AS UINT, uMsg AS UINT, wp AS UINT, lp AS UINT), INT
+    PAINTSTRUCT ps
+    UINT hdc, hDrop
+    INT mouse_X, mouse_Y, lastHover, lastLink
+    STRING selectedPath
+    UINT passHwnd
+    POINTER pBufTarget
+    INT limitY
+
+    SELECT uMsg
+		  ' 0x0010 = WM_CLOSE
+        CASE 0x0010
+            ' 1. Persist state and window position to R256.ini
+            SaveSettings(GETCONTROLTEXT(g_app.win, ID_FILE_EDIT))            
+            ' 2. Destroy/Close the main stage window
+            CLOSEWINDOW g_app.win
+            RETURN 0
+        CASE WM_ERASEBKGND
+            RETURN 1
+
+        ' 1. Intercept Dialog Manager Navigation Keys (Prevents OS key eating)
+        CASE 0x0087 ' WM_GETDLGCODE
+            RETURN 0x0004 ' DLGC_WANTALLKEYS
+
+        ' 2. Custom Dark Theme Edit & Control Brushes
+        CASE WM_CTLCOLOREDIT
+            SetTextColor(wp, RGB_TEXT_WHITE)
+            SetBkColor(wp, RGB_EDIT_BG)
+            SetBkMode(wp, 2)
+            RETURN g_app.hEditBrush
+
+        CASE WM_CTLCOLORSTATIC
+            IF lp = GETCONTROLHANDLE(g_app.win, ID_SHOWPASS_CHK) OR lp = GETCONTROLHANDLE(g_app.win, ID_ZIPFIRST_CHK) THEN
+                SetTextColor(wp, RGB_TEXT_MUTED)
+                SetBkColor(wp, RGB_BG_DARK)
+                SetBkMode(wp, 1)
+                RETURN g_app.hDarkBrush
+            ENDIF
+
+        CASE WM_CTLCOLORBTN
+            IF lp = GETCONTROLHANDLE(g_app.win, ID_SHOWPASS_CHK) OR lp = GETCONTROLHANDLE(g_app.win, ID_ZIPFIRST_CHK) THEN
+                SetTextColor(wp, RGB_TEXT_MUTED)
+                SetBkColor(wp, RGB_BG_DARK)
+                SetBkMode(wp, 1)
+                RETURN g_app.hDarkBrush
+            ENDIF
+
+        ' 3. Unified Keyboard Hotkeys & Viewport Navigation
+        CASE WM_KEYDOWN
+            ' ESC Key Handler: Always return to Main Control Panel
+            IF wp = 0x1B THEN ' VK_ESCAPE
+                IF g_app.activePage <> PAGE_MAIN THEN
+                    SlideViewportToPage(PAGE_MAIN)
+                    RETURN 0
+                ENDIF
+            ENDIF
+
+            ' Control Accelerators (<Ctrl> + Key)
+            IF (GetKeyState(0x11) & 0x8000) THEN ' VK_CONTROL
+                SELECT wp
+                    CASE 0x41 ' Ctrl+A -> Toggle / Slide to About Screen
+                        IF g_app.activePage = PAGE_ABOUT THEN
+                            SlideViewportToPage(PAGE_MAIN)
+                        ELSE
+                            SlideViewportToPage(PAGE_ABOUT)
+                        ENDIF
+                        RETURN 0
+
+                    CASE 0x48 ' Ctrl+H -> Toggle / Slide to Help Screen
+                        IF g_app.activePage = PAGE_HELP THEN
+                            SlideViewportToPage(PAGE_MAIN)
+                        ELSE
+                            SlideViewportToPage(PAGE_HELP)
+                        ENDIF
+                        RETURN 0
+
+                    CASE 0x4D ' Ctrl+M -> Direct Slide back to Main Control Panel
+                        IF g_app.activePage <> PAGE_MAIN THEN
+                            ShellExecuteA(hwnd, "open", "mailto:yannick.dalissier@outlook.com", NULL, NULL, 1)
+                        ENDIF
+                        RETURN 0
+
+                    CASE 0x42 ' Ctrl+B -> File Browse Dialog
+                        IF g_app.activePage = PAGE_MAIN AND g_app.isProcessing = 0 THEN
+                            selectedPath = FILEREQUEST("Select Target File", g_app.win, 1, "All Files (*.*)|*.*||", "")
+                            IF selectedPath <> "" THEN
+                                IF LEN(selectedPath) <= 256 THEN
+                                    SETCONTROLTEXT(g_app.win, ID_FILE_EDIT, selectedPath)
+                                    CheckFileStatusAndMarker(selectedPath)
+                                    LogAction("File selected via Browse hotkey: " + selectedPath)
+                                ENDIF
+                                InvalidateRect(hwnd, NULL, 0)
+                            ENDIF
+                            RETURN 0
+                        ENDIF
+
+                    CASE 0x50 ' Ctrl+P -> Protect Execution
+                        IF g_app.activePage = PAGE_MAIN AND g_app.isProcessing = 0 AND g_app.isProtectedMarker = 0 THEN
+                            StartWorkerThread(GETCONTROLTEXT(g_app.win, ID_PASS_EDIT), 1)
+                            RETURN 0
+                        ENDIF
+
+                    CASE 0x52 ' Ctrl+R -> Restore Execution
+                        IF g_app.activePage = PAGE_MAIN AND g_app.isProcessing = 0 AND g_app.isProtectedMarker = 1 THEN
+                            StartWorkerThread(GETCONTROLTEXT(g_app.win, ID_PASS_EDIT), 0)
+                            RETURN 0
+                        ENDIF
+                ENDSELECT
+            ENDIF
+
+            ' Help Viewport Keyboard Scrolling (PageUp, PageDown, Arrows, Home, End)
+            IF g_app.activePage = PAGE_HELP THEN
+                limitY = g_app.maxScrollY
+                IF limitY <= 0 THEN limitY = 400 ' Fallback threshold prior to first paint pass
+
+                SELECT wp
+                    CASE 0x21 ' VK_PRIOR (PageUp)
+                        g_app.scrollY = g_app.scrollY - (VIEWPORT_HEIGHT - 32)
+                        IF g_app.scrollY < 0 THEN g_app.scrollY = 0
+                        InvalidateRect(hwnd, NULL, 0)
+                        RETURN 0
+
+                    CASE 0x22 ' VK_NEXT (PageDown)
+                        g_app.scrollY = g_app.scrollY + (VIEWPORT_HEIGHT - 32)
+                        IF g_app.scrollY > limitY THEN g_app.scrollY = limitY
+                        InvalidateRect(hwnd, NULL, 0)
+                        RETURN 0
+
+                    CASE 0x26 ' VK_UP (Up Arrow)
+                        g_app.scrollY = g_app.scrollY - 20
+                        IF g_app.scrollY < 0 THEN g_app.scrollY = 0
+                        InvalidateRect(hwnd, NULL, 0)
+                        RETURN 0
+
+                    CASE 0x28 ' VK_DOWN (Down Arrow)
+                        g_app.scrollY = g_app.scrollY + 20
+                        IF g_app.scrollY > limitY THEN g_app.scrollY = limitY
+                        InvalidateRect(hwnd, NULL, 0)
+                        RETURN 0
+
+                    CASE 0x24 ' VK_HOME
+                        g_app.scrollY = 0
+                        InvalidateRect(hwnd, NULL, 0)
+                        RETURN 0
+
+                    CASE 0x23 ' VK_END
+                        g_app.scrollY = limitY
+                        InvalidateRect(hwnd, NULL, 0)
+                        RETURN 0
+                ENDSELECT
+            ENDIF
+
+        ' 4. Mouse Wheel Scrolling Handler
+        CASE 0x020A ' WM_MOUSEWHEEL
+            IF g_app.activePage = PAGE_HELP THEN
+                INT zDelta = (wp >> 16) & 0xFFFF
+                IF zDelta > 32767 THEN zDelta = zDelta - 65536
+                limitY = g_app.maxScrollY
+                IF limitY <= 0 THEN limitY = 400
+
+                IF zDelta > 0 THEN
+                    g_app.scrollY = g_app.scrollY - 28
+                ELSE
+                    g_app.scrollY = g_app.scrollY + 28
+                ENDIF
+
+                IF g_app.scrollY < 0 THEN g_app.scrollY = 0
+                IF g_app.scrollY > limitY THEN g_app.scrollY = limitY
+                InvalidateRect(hwnd, NULL, 0)
+                RETURN 0
+            ENDIF
+
+        ' 5. Consolidated LBUTTONDOWN Handler
+        CASE WM_LBUTTONDOWN
+            mouse_X = lp & 0xFFFF
+            mouse_Y = (lp >> 16) & 0xFFFF
+
+            ' Clear edit focus on background clicks
+            SetFocus g_app.win
+
+            ' A. Help Panel Custom Scrollbar Thumb Dragging
+            IF g_app.activePage = PAGE_HELP THEN
+                IF mouse_X >= g_app.rcThumb.left AND mouse_X <= g_app.rcThumb.right THEN
+                    IF mouse_Y >= g_app.rcThumb.top AND mouse_Y <= g_app.rcThumb.bottom THEN
+                        g_app.isDraggingThumb = 1
+                        g_app.dragStartMouseY = mouse_Y
+                        g_app.dragStartScroll = g_app.scrollY
+                        SetCapture(hwnd)
+                        InvalidateRect(hwnd, NULL, 0)
+                        RETURN 0
+                    ENDIF
+                ENDIF
+            ENDIF
+
+            ' B. Main Stage Action Buttons
+            IF mouse_Y >= 247 AND mouse_Y <= 274 AND g_app.isProcessing = 0 AND g_app.activePage = PAGE_MAIN THEN
+                IF mouse_X >= 20 AND mouse_X <= 130 THEN
+                    selectedPath = FILEREQUEST("Select Target File", g_app.win, 1, "All Files (*.*)|*.*||", "")
+                    IF selectedPath <> "" THEN
+                        IF LEN(selectedPath) <= 256 THEN
+                            SETCONTROLTEXT(g_app.win, ID_FILE_EDIT, selectedPath)
+                            CheckFileStatusAndMarker(selectedPath)
+                            LogAction("File selected via Browse: " + selectedPath)
+                        ELSE
+                            g_app.statusMsg = "Error: File path exceeds 256 characters!"
+                            LogAction("Error: Browse path exceeded 256 chars.")
+                        ENDIF
+                        InvalidateRect(hwnd, NULL, 0)
+                    ENDIF
+                ELSEIF mouse_X >= 140 AND mouse_X <= 270 THEN
+                    IF g_app.isProtectedMarker = 0 THEN
+                        StartWorkerThread(GETCONTROLTEXT(g_app.win, ID_PASS_EDIT), 1)
+                    ENDIF
+                ELSEIF mouse_X >= 280 AND mouse_X <= 415 THEN
+                    IF g_app.isProtectedMarker = 1 THEN
+                        StartWorkerThread(GETCONTROLTEXT(g_app.win, ID_PASS_EDIT), 0)
+                    ENDIF
+                ENDIF
+            ENDIF
+
+            ' C. Footer Viewport Switcher Navigation Links
+            IF mouse_Y >= g_app.rcLinkHelp.top AND mouse_Y <= g_app.rcLinkHelp.bottom THEN
+                IF mouse_X >= g_app.rcLinkHelp.left AND mouse_X <= g_app.rcLinkHelp.right THEN
+                    IF g_app.activePage = PAGE_HELP THEN
+                        SlideViewportToPage(PAGE_MAIN)
+                    ELSE
+                        SlideViewportToPage(PAGE_HELP)
+                    ENDIF
+                    RETURN 0
+                ELSEIF mouse_X >= g_app.rcLinkMail.left AND mouse_X <= g_app.rcLinkMail.right THEN
+                    ShellExecuteA(hwnd, "open", "mailto:yannick.dalissier@outlook.com", NULL, NULL, 1)
+                    RETURN 0
+                ELSEIF mouse_X >= g_app.rcLinkAbout.left AND mouse_X <= g_app.rcLinkAbout.right THEN
+                    IF g_app.activePage = PAGE_ABOUT THEN
+                        SlideViewportToPage(PAGE_MAIN)
+                    ELSE
+                        SlideViewportToPage(PAGE_ABOUT)
+                    ENDIF
+                    RETURN 0
+                ENDIF
+            ENDIF
+
+        ' 6. Mouse Hover Tracking & Scrollbar Dragging Update
+        CASE WM_MOUSEMOVE
+            mouse_X = lp & 0xFFFF
+            mouse_Y = (lp >> 16) & 0xFFFF
+
+            IF g_app.isDraggingThumb THEN
+                INT deltaY = mouse_Y - g_app.dragStartMouseY
+                INT trackH = VIEWPORT_HEIGHT - 8
+                FLOAT scrollFactor = FLOAT(g_app.maxScrollY) / FLOAT(trackH - 35)
+        
+                g_app.scrollY = g_app.dragStartScroll + INT(FLOAT(deltaY) * scrollFactor)
+                IF g_app.scrollY < 0 THEN g_app.scrollY = 0
+                IF g_app.scrollY > g_app.maxScrollY THEN g_app.scrollY = g_app.maxScrollY
+        
+                InvalidateRect(hwnd, NULL, 0)
+                RETURN 0
+            ENDIF
+
+            lastHover = g_app.hoverBtn
+            lastLink = g_app.hoverLink
+            g_app.hoverBtn = 0
+            g_app.hoverLink = 0
+
+            IF mouse_Y >= 247 AND mouse_Y <= 274 AND g_app.isProcessing = 0 AND g_app.activePage = PAGE_MAIN THEN
+                IF mouse_X >= 20 AND mouse_X <= 130 THEN g_app.hoverBtn = 1
+                IF mouse_X >= 140 AND mouse_X <= 270 AND g_app.isProtectedMarker = 0 THEN g_app.hoverBtn = 2
+                IF mouse_X >= 280 AND mouse_X <= 415 AND g_app.isProtectedMarker = 1 THEN g_app.hoverBtn = 3
+            ENDIF
+
+            IF mouse_Y >= g_app.rcLinkHelp.top AND mouse_Y <= g_app.rcLinkHelp.bottom THEN
+                IF mouse_X >= g_app.rcLinkHelp.left AND mouse_X <= g_app.rcLinkHelp.right THEN g_app.hoverLink = 1
+                IF mouse_X >= g_app.rcLinkMail.left AND mouse_X <= g_app.rcLinkMail.right THEN g_app.hoverLink = 2
+                IF mouse_X >= g_app.rcLinkAbout.left AND mouse_X <= g_app.rcLinkAbout.right THEN g_app.hoverLink = 3
+            ENDIF
+
+            IF g_app.hoverBtn <> lastHover OR g_app.hoverLink <> lastLink THEN InvalidateRect(hwnd, NULL, 0)
+
+        ' 7. Scrollbar Release
+        CASE WM_LBUTTONUP
+            IF g_app.isDraggingThumb THEN
+                g_app.isDraggingThumb = 0
+                ReleaseCapture()
+                InvalidateRect(hwnd, NULL, 0)
+                RETURN 0
+            ENDIF
+
+        ' 8. Checkbox & Dynamic Text Event Commands
+        CASE WM_COMMAND
+            IF (wp & 0xFFFF) = ID_SHOWPASS_CHK THEN
+                passHwnd = GETCONTROLHANDLE(g_app.win, ID_PASS_EDIT)
+                IF GETSTATE(g_app.win, ID_SHOWPASS_CHK) THEN
+                    SendMessageA(passHwnd, EM_SETPASSWORDCHAR, 0, 0)
+                ELSE
+                    SendMessageA(passHwnd, EM_SETPASSWORDCHAR, 42, 0)
+                ENDIF
+                InvalidateRect(passHwnd, NULL, 1)
+            ELSEIF (wp & 0xFFFF) = ID_FILE_EDIT THEN
+                IF ((wp >> 16) & 0xFFFF) = 0x0300 THEN ' EN_CHANGE
+                    CheckFileStatusAndMarker(GETCONTROLTEXT(g_app.win, ID_FILE_EDIT))
+                ENDIF
+            ENDIF
+
+        ' 9. Double-Buffered Paint Pass
+        CASE WM_PAINT
+            hdc = BeginPaint(hwnd, &ps)
+            RenderGDIPlusUI(hdc)
+            EndPaint(hwnd, &ps)
+            RETURN 0
+
+		 ' 10. 0x0113 = WM_TIMER
+        CASE 0x0113
+            IF wp = 101 THEN
+                IF g_app.activePage = PAGE_ABOUT THEN
+                    g_app.aboutScrollY = g_app.aboutScrollY + 1
+                    
+                    ' Reset back to 0 as soon as the last line completely disappears past the top
+                    IF g_app.aboutScrollY > 600 THEN
+                        g_app.aboutScrollY = 0
+                    ENDIF
+                    
+                    InvalidateRect(hwnd, NULL, 0)
+                ELSE
+                    KillTimer(hwnd, 101)
+                ENDIF
+                RETURN 0
+            ENDIF
+
+        ' 11. Native Win32 Drag & Drop Support
+        CASE WM_DROPFILES
+            hDrop = wp
+            IF g_app.isProcessing = 0 AND g_app.activePage = PAGE_MAIN AND DragQueryFileA(hDrop, 0, g_app.pDropBuf, 512) > 0 THEN
+                pBufTarget = g_app.pDropBuf
+                selectedPath = #<STRING>pBufTarget
+                IF LEN(selectedPath) <= 256 THEN
+                    SETCONTROLTEXT(g_app.win, ID_FILE_EDIT, selectedPath)
+                    CheckFileStatusAndMarker(selectedPath)
+                    LogAction("File loaded via Drag & Drop: " + selectedPath)
+                ELSE
+                    g_app.statusMsg = "Error: Dropped path exceeds 256 characters!"
+                    LogAction("Error: Dropped path exceeded 256 chars.")
+                ENDIF
+                InvalidateRect(hwnd, NULL, 0)
+            ENDIF
+            DragFinish(hDrop)
+            RETURN 0
+    ENDSELECT
+
+    RETURN CallWindowProcA(g_app.pOldWndProc, hwnd, uMsg, wp, lp)
+ENDSUB
+
+' ===============================================================================
+' IWBASIC WINDOW HANDLER
+' ===============================================================================
+
+SUB Handler(), INT
+    SELECT @MESSAGE
+        CASE @IDCLOSEWINDOW
+            ' Prevent abrupt exit mid-cipher operation
+            IF g_app.isProcessing THEN RETURN 0
+
+            ' Save window coordinates and last folder before memory wipe
+            SaveSettings(GETCONTROLTEXT(g_app.win, ID_FILE_EDIT))
+
+            IF g_app.pKeyArray <> NULL THEN WipeBuffer(g_app.pKeyArray, 2048) : FREEMEM g_app.pKeyArray
+            IF g_app.pCFBBuf <> NULL THEN WipeBuffer(g_app.pCFBBuf, 128) : FREEMEM g_app.pCFBBuf
+            IF g_app.pDropBuf <> NULL THEN WipeBuffer(g_app.pDropBuf, 1024) : FREEMEM g_app.pDropBuf
+            IF g_app.pPwrTab <> NULL THEN WipeBuffer(g_app.pPwrTab, 256) : FREEMEM g_app.pPwrTab
+            IF g_app.pLogTab <> NULL THEN WipeBuffer(g_app.pLogTab, 256) : FREEMEM g_app.pLogTab
+            IF g_app.pSBox <> NULL THEN WipeBuffer(g_app.pSBox, 256) : FREEMEM g_app.pSBox
+            CLOSEWINDOW g_app.win
+    ENDSELECT
+    RETURN 0
+ENDSUB
+
+' ===============================================================================
+' MAIN ENTRY POINT
+' ===============================================================================
+$MAIN
+
+INT initStatus
+UINT hFileEdit, hPassEdit, hZipChk, hShowChk
+INT hZlibCheck = 0
+
+g_app.activePage = PAGE_MAIN
+g_app.isAnimating = 0
+g_app.stageX = 0
+
+g_app.logBufSize = 65536
+g_app.logBufUsed = 0
+g_app.gdiToken = 0
+g_app.gdiRefCount = 0
+g_app.isProcessing = 0
+g_app.hasZlibDll = 0
+g_app.isProtectedMarker = 0
+g_app.statusMsg = "System Ready. Drop a target file to begin."
+
+g_app.iniPath = GETSTARTPATH + "R256.ini"
+g_app.logPath = GETSTARTPATH + "log.txt"
+
+ALLOCMEM(g_app.pLogBuffer, g_app.logBufSize, 1)
+
+LogAction("--- Application Started ---")
+
+hZlibCheck = LoadLibraryA(GETSTARTPATH + "zlib.dll")
+IF hZlibCheck = 0 THEN
+    hZlibCheck = LoadLibraryA(GETSTARTPATH + "zlib1.dll")
+ENDIF
+
+IF hZlibCheck <> 0 THEN
+    g_app.hasZlibDll = 1
+    FreeLibrary(hZlibCheck)
+    LogAction("Startup Verification: zlib.dll detected.")
+ELSE
+    g_app.hasZlibDll = 0
+    g_app.statusMsg = "Notice: zlib.dll not found. Pre-compression disabled."
+    LogAction("Startup Notice: zlib.dll not found in GETSTARTPATH. ZIP option disabled.")
+ENDIF
+
+initStatus = InitAES_Engine()
+IF initStatus = 0 THEN
+    LogAction("Initialization Error: Failed to allocate crypto memory.")
+    MESSAGEBOX(0, "Initialization Error: Failed to allocate crypto memory.", "AES Engine")
+    END
+ENDIF
+
+IF TestCipherInversion() = 0 THEN
+    LogAction("CRITICAL ERROR: Core Cipher Engine failed in-memory roundtrip test!")
+    MESSAGEBOX(0, "CRITICAL ERROR: Core Cipher Engine failed in-memory roundtrip test!", "Crypto Math Failure")
+    END
+ENDIF
+
+IF InitGDIPlus() = 0 THEN
+    LogAction("Initialization Error: Failed to start GDI+ subsystem.")
+    MESSAGEBOX(0, "Initialization Error: Failed to start GDI+ subsystem.", "GDI+ Engine")
+    END
+ENDIF
+
+g_app.hEditBrush = CreateSolidBrush(RGB_EDIT_BG)
+g_app.hDarkBrush = CreateSolidBrush(RGB_BG_DARK)
+g_app.hEditFont   = CreateFontA(-12, 0, 0, 0, 400, 0, 0, 0, 0, 0, 0, 5, 0, "Tahoma")
+
+g_credits[0]  = "=|= Version 2.56 - Final =|="
+g_credits[1]  = "Portable Compact Security Tool"
+g_credits[2]  = ""
+g_credits[3]  = "=|= DEVELOPMENT =|="
+g_credits[4]  = "Written in IWBasic 2.5"
+g_credits[5]  = "Programming: Yannick Dalissier"
+g_credits[6]  = "Assistance: Gemini AI"
+g_credits[7]  = ""
+g_credits[8]  = "=|= LIBRARIES & CRYPTO CORE =|="
+g_credits[9]  = "Compression: zlib / zlib1 stream DLL"
+g_credits[10] = "Cipher Engine: 256-Bit CFB Rijndael"
+g_credits[11] = ""
+g_credits[12] = "=|= SOFTWARE LICENSE =|="
+g_credits[13] = "This is Free Software!"
+g_credits[14] = "You are granted the right to copy"
+g_credits[15] = "and distribute this program freely."
+g_credits[16] = ""
+g_credits[17] = "Press <ESC> to return to Main Screen"
+g_creditsCount = 18
+
+	 ' 1. Open Main Window
+    OPENWINDOW g_app.win, 0, 0, 440, 395, @CAPTION|@SYSMENU|@MINBOX|@NOAUTODRAW, 0, "Rijndael Guard", &Handler
+
+    ' 3. Log startup once
+    LogAction("--- Application Started ---")
+    
+    ' 4. Check zlib DLL
+    IF LoadLibraryA("zlib1.dll") <> 0 OR LoadLibraryA("zlib.dll") <> 0 THEN
+        LogAction("Startup Verification: zlib.dll detected.")
+    ENDIF
+
+    ' 5. Check Hardware Acceleration
+    g_app.hasAESNI = IsAESNI_Supported()
+	 SELECT g_app.hasAESNI
+		 CASE 1
+        SETCAPTION g_app.win, "R256 [Hardware Mode]"
+		 DEFAULT
+        SETCAPTION g_app.win, "R256 [Software Mode]"
+    ENDSELECT
+
+DragAcceptFiles(g_app.win.hwnd, 1)
+
+g_app.pOldWndProc = SetWindowLongA(g_app.win.hwnd, GWL_WNDPROC, &SubclassProc)
+
+CONTROL g_app.win, @EDIT, "", 20, 100, 395, 19, @TABSTOP, ID_FILE_EDIT
+CONTROL g_app.win, @CHECKBOX, "ZIP first before encrypting", 22, 123, 200, 18, @TABSTOP, ID_ZIPFIRST_CHK
+CONTROL g_app.win, @EDIT, "", 20, 185, 395, 19, @TABSTOP | @CTEDITPASS | @CTEDITCENTER, ID_PASS_EDIT
+CONTROL g_app.win, @CHECKBOX, "Show password", 22, 213, 130, 18, @TABSTOP, ID_SHOWPASS_CHK
+
+hFileEdit = GETCONTROLHANDLE(g_app.win, ID_FILE_EDIT)
+hPassEdit = GETCONTROLHANDLE(g_app.win, ID_PASS_EDIT)
+hZipChk   = GETCONTROLHANDLE(g_app.win, ID_ZIPFIRST_CHK)
+hShowChk  = GETCONTROLHANDLE(g_app.win, ID_SHOWPASS_CHK)
+
+IF hFileEdit <> 0 THEN
+    SendMessageA(hFileEdit, WM_SETFONT, g_app.hEditFont, 1)
+    SendMessageA(hFileEdit, EM_LIMITTEXT, 256, 0)
+ENDIF
+
+IF hPassEdit <> 0 THEN
+    SendMessageA(hPassEdit, WM_SETFONT, g_app.hEditFont, 1)
+    SendMessageA(hPassEdit, EM_LIMITTEXT, 256, 0)
+ENDIF
+
+IF hZipChk <> 0 THEN
+    SendMessageA(hZipChk, WM_SETFONT, g_app.hEditFont, 1)
+    IF g_app.hasZlibDll = 0 THEN
+        EnableWindow(hZipChk, 0)
+    ENDIF
+ENDIF
+
+IF hShowChk <> 0 THEN
+    SendMessageA(hShowChk, WM_SETFONT, g_app.hEditFont, 1)
+ENDIF
+
+StripEditBorders(ID_FILE_EDIT)
+StripEditBorders(ID_PASS_EDIT)
+
+g_app.pOldFileEditProc = SetWindowLongA(hFileEdit, GWL_WNDPROC, &EditSubclassProc)
+g_app.pOldPassEditProc = SetWindowLongA(hPassEdit, GWL_WNDPROC, &EditSubclassProc)
+
+SETCONTROLCOLOR g_app.win, ID_FILE_EDIT, RGB_TEXT_WHITE, RGB_EDIT_BG
+SETCONTROLCOLOR g_app.win, ID_ZIPFIRST_CHK, RGB_TEXT_MUTED, RGB_BG_DARK
+SETCONTROLCOLOR g_app.win, ID_PASS_EDIT, RGB_TEXT_WHITE, RGB_EDIT_BG
+SETCONTROLCOLOR g_app.win, ID_SHOWPASS_CHK, RGB_TEXT_MUTED, RGB_BG_DARK
+
+' 6. Load INI settings (Position & File Path) ONCE
+LoadSettings()
+
+' 7. Load Pictures from DATA blocks
+LoadAboutLogoData()
+LoadBookIconData()
+
+WAITUNTIL g_app.win = 0
+
+IF g_app.pOldWndProc <> 0 THEN SetWindowLongA(g_app.win.hwnd, GWL_WNDPROC, g_app.pOldWndProc)
+IF g_app.pOldFileEditProc <> 0 THEN SetWindowLongA(GETCONTROLHANDLE(g_app.win, ID_FILE_EDIT), GWL_WNDPROC, g_app.pOldFileEditProc)
+IF g_app.pOldPassEditProc <> 0 THEN SetWindowLongA(GETCONTROLHANDLE(g_app.win, ID_PASS_EDIT), GWL_WNDPROC, g_app.pOldPassEditProc)
+
+IF g_app.hEditBrush <> 0 THEN DeleteObject(g_app.hEditBrush)
+IF g_app.hDarkBrush <> 0 THEN DeleteObject(g_app.hDarkBrush)
+IF g_app.hEditFont  <> 0 THEN DeleteObject(g_app.hEditFont)
+IF g_app.pLogBuffer <> NULL THEN FREEMEM g_app.pLogBuffer
+IF g_app.pGpAboutLogo <> NULL THEN
+    GdipDisposeImage(g_app.pGpAboutLogo)
+    g_app.pGpAboutLogo = NULL
+ENDIF
+
+IF g_app.pGpBookIcon <> NULL THEN
+    GdipDisposeImage(g_app.pGpBookIcon)
+    g_app.pGpBookIcon = NULL
+ENDIF
+
+ShutdownGDIPlus()
+
+LogAction("--- Application Closed ---")
+SaveLogBufferToDisk()
+
+END
+
+' ===============================================================================
+' ONE-TIME GDI+ LOADER FOR 32x32 HELP BOOK ICON
+' Call this ONCE at startup to populate g_app.pGpBookIcon
+' ===============================================================================
+SUB LoadBookIconData()
+    INT totalBytes = 304 ' <-- REPLACE WITH EXACT BYTE COUNT FROM DATAmake OUTPUT
+    INT hMem = 0
+    POINTER pMemBuf = NULL
+    POINTER pStream = NULL
+    INT i = 0, bVal = 0
+
+    IF totalBytes <= 0 THEN RETURN
+
+    ' 1. Allocate movable memory block
+    hMem = GlobalAlloc(0x0002, totalBytes) ' GMEM_MOVEABLE = 0x0002
+    IF hMem = 0 THEN RETURN
+
+    pMemBuf = GlobalLock(hMem)
+    IF pMemBuf <> NULL THEN
+        ' Reset data pointer to book icon DATA block
+        RESTORE(png_help09a_Data)
+
+        FOR i = 0 TO totalBytes - 1
+            GETDATA(png_help09a_Data, bVal)
+            #<CHAR>(pMemBuf + i) = (bVal & 0xFF)
+        NEXT i
+
+        GlobalUnlock(hMem)
+
+        ' 2. Create IStream and instantiate GDI+ Image Handle
+        IF CreateStreamOnHGlobal(hMem, 1, &pStream) = 0 THEN
+            GdipLoadImageFromStream(pStream, &g_app.pGpBookIcon)
+        ENDIF
+    ENDIF
+ENDSUB
+' ===============================================================================
+' EMBEDDED DATA: help09a ( 304 bytes)
+' ===============================================================================
+DATABEGIN png_help09a_Data
+DATA 0x89, 0x50, 0x4E, 0x47, 0xD, 0xA, 0x1A, 0xA, 0x0, 0x0, 0x0, 0xD, 0x49, 0x48, 0x44, 0x52
+DATA 0x0, 0x0, 0x0, 0x20, 0x0, 0x0, 0x0, 0x20, 0x8, 0x6, 0x0, 0x0, 0x0, 0x73, 0x7A, 0x7A
+DATA 0xF4, 0x0, 0x0, 0x0, 0xF7, 0x49, 0x44, 0x41, 0x54, 0x78, 0xDA, 0xED, 0xD7, 0xDD, 0xD, 0x82
+DATA 0x30, 0x10, 0x0, 0xE0, 0xEB, 0x34, 0xFA, 0xE, 0xF, 0xC, 0xE1, 0x0, 0x6E, 0xC0, 0x18, 0xE2
+DATA 0x18, 0x1D, 0xC0, 0xC4, 0x61, 0xCA, 0xBB, 0x23, 0x38, 0x4, 0xC9, 0x79, 0x55, 0x5B, 0x5B, 0x42
+DATA 0xFF, 0x84, 0xD3, 0x97, 0x5E, 0xD2, 0xD0, 0x1F, 0xE0, 0x3E, 0x9A, 0x36, 0x29, 0x2, 0xFE, 0x1C
+DATA 0xC2, 0xA9, 0x63, 0x62, 0x9C, 0xD, 0x60, 0x13, 0x23, 0x7E, 0xC, 0x42, 0x8, 0xF7, 0x1E, 0x5E
+DATA 0x0, 0xDA, 0x8A, 0xF, 0x50, 0x4A, 0x41, 0xDB, 0xB6, 0xAC, 0x88, 0x24, 0x40, 0x7, 0x27, 0x22
+DATA 0xB, 0xC0, 0x89, 0xC8, 0x6, 0x44, 0x10, 0x8, 0x65, 0x21, 0xE6, 0x8D, 0x22, 0x80, 0xEE, 0x9B
+DATA 0xEE, 0x13, 0x74, 0x87, 0xEE, 0x95, 0x1D, 0xF3, 0xF3, 0x2F, 0x2D, 0xEC, 0x22, 0xC0, 0x38, 0x8E
+DATA 0xD0, 0xF7, 0xFD, 0xB3, 0xAE, 0xC7, 0x9A, 0xA6, 0x29, 0xFB, 0x74, 0x7F, 0x61, 0x7F, 0xF, 0x30
+DATA 0xFD, 0x6B, 0x0, 0x26, 0x67, 0x5, 0x54, 0x40, 0x5, 0x54, 0x40, 0x5, 0x54, 0x80, 0x7, 0x98
+DATA 0x1F, 0x40, 0x7E, 0x5, 0xD0, 0x81, 0x27, 0x18, 0xE0, 0x4A, 0xE5, 0x12, 0x41, 0x70, 0x2, 0x60
+DATA 0x47, 0x88, 0x1B, 0x5D, 0xF7, 0x54, 0x42, 0x8, 0x56, 0x40, 0xE, 0x82, 0x1D, 0x10, 0x42, 0x84
+DATA 0x0, 0xEE, 0x9, 0x29, 0x37, 0x92, 0x80, 0x18, 0x42, 0x4A, 0x69, 0x1, 0xA6, 0x5D, 0x3A, 0xB
+DATA 0xE6, 0x5D, 0x51, 0xC0, 0x12, 0xC2, 0x5, 0x6C, 0x11, 0x49, 0x80, 0x41, 0x1C, 0x69, 0x67, 0x9C
+DATA 0xA9, 0xCC, 0x1F, 0xDE, 0x22, 0x92, 0x0, 0x78, 0x6F, 0xCF, 0xC1, 0x1, 0xC, 0xB, 0xA0, 0xB5
+DATA 0x88, 0x60, 0xD0, 0x94, 0x63, 0x60, 0xCA, 0x37, 0xFB, 0x43, 0x7A, 0x0, 0x1B, 0x70, 0xB5, 0x19
+DATA 0xDA, 0x50, 0xC4, 0x9B, 0x0, 0x0, 0x0, 0x0, 0x49, 0x45, 0x4E, 0x44, 0xAE, 0x42, 0x60, 0x82
+DATAEND
+
+' ===============================================================================
+' ONE-TIME GDI+ IMAGE LOADER FROM DATA BLOCK
+' Call this ONCE at startup to load g_app.pGpAboutLogo
+' ===============================================================================
+SUB LoadAboutLogoData()
+    INT totalBytes = 2048 ' <-- Replace with exact byte count from DATAmake output
+    INT hMem = 0
+    POINTER pMemBuf = NULL
+    POINTER pStream = NULL
+    INT i = 0, bVal = 0
+
+    IF totalBytes <= 0 THEN RETURN
+
+    ' 1. Allocate movable memory block
+    hMem = GlobalAlloc(0x0002, totalBytes) ' GMEM_MOVEABLE = 0x0002
+    IF hMem = 0 THEN RETURN
+
+    pMemBuf = GlobalLock(hMem)
+    IF pMemBuf <> NULL THEN
+        
+        ' Restore data pointer to block
+        RESTORE(png_logo_Data)
+
+        FOR i = 0 TO totalBytes - 1
+            GETDATA(png_logo_Data, bVal)
+            
+            ' Write byte directly into heap memory block
+            #<CHAR>(pMemBuf + i) = (bVal & 0xFF)
+        NEXT i
+
+        GlobalUnlock(hMem)
+
+        ' 3. Create IStream and construct GDI+ Image
+        IF CreateStreamOnHGlobal(hMem, 1, &pStream) = 0 THEN
+            GdipLoadImageFromStream(pStream, &g_app.pGpAboutLogo)
+        ENDIF
+    ENDIF
+ENDSUB
+
+
+' ===============================================================================
+' EMBEDDED DATA: logo ( 1044 bytes)
+' ===============================================================================
+DATABEGIN png_logo_Data
+DATA 0x89, 0x50, 0x4E, 0x47, 0xD, 0xA, 0x1A, 0xA, 0x0, 0x0, 0x0, 0xD, 0x49, 0x48, 0x44, 0x52
+DATA 0x0, 0x0, 0x1, 0x0, 0x0, 0x0, 0x0, 0x27, 0x8, 0x6, 0x0, 0x0, 0x0, 0xE0, 0xAC, 0x96
+DATA 0x5C, 0x0, 0x0, 0x3, 0xDB, 0x49, 0x44, 0x41, 0x54, 0x78, 0x9C, 0xED, 0x9C, 0x4B, 0x72, 0xE5
+DATA 0x20, 0xC, 0x45, 0xED, 0x54, 0xF6, 0xBF, 0xE5, 0xD7, 0x23, 0xBA, 0x8, 0xF, 0xC3, 0x95, 0x90
+DATA 0x40, 0x98, 0x7B, 0x46, 0xDD, 0x9, 0x6, 0xA1, 0x9F, 0x31, 0x88, 0x5C, 0x97, 0x1, 0x9F, 0xCF
+DATA 0xF5, 0xB1, 0xE8, 0x87, 0x10, 0x32, 0x97, 0x5B, 0xD2, 0x78, 0x24, 0xD0, 0xEF, 0x5B, 0x36, 0x16
+DATA 0x39, 0x3, 0xD4, 0xA7, 0xE8, 0x3F, 0x3E, 0x34, 0x95, 0x5A, 0x1A, 0xA7, 0x66, 0x84, 0xD4, 0xE6
+DATA 0xC9, 0x40, 0x4F, 0x6, 0x3E, 0xCD, 0xA0, 0x35, 0x3D, 0x9C, 0xA6, 0x83, 0x44, 0xAE, 0xB, 0xA9
+DATA 0xDF, 0xE4, 0x9C, 0xAA, 0xBF, 0x11, 0xBE, 0x62, 0xBA, 0xD5, 0x8, 0x51, 0x30, 0xDA, 0x56, 0x9A
+DATA 0x8, 0x10, 0x27, 0xD1, 0xB4, 0x5D, 0xC1, 0x2E, 0xC1, 0xDF, 0xB, 0xBA, 0x11, 0x99, 0x47, 0x6C
+DATA 0xC4, 0x97, 0x88, 0xD, 0x55, 0x3F, 0xAC, 0x35, 0x40, 0x15, 0xAB, 0x35, 0xAA, 0x64, 0x65, 0x81
+DATA 0xF4, 0x2F, 0x69, 0x3B, 0x9B, 0xC8, 0xB2, 0xE5, 0x78, 0x26, 0x29, 0xA9, 0x5F, 0xB5, 0xFA, 0xB0
+DATA 0x94, 0xEB, 0x24, 0x9E, 0xFC, 0xF0, 0x37, 0x6F, 0x30, 0x4B, 0xB1, 0xF7, 0x7D, 0xDD, 0xB9, 0x40
+DATA 0x33, 0xC7, 0x5E, 0xC5, 0x2E, 0xF3, 0xB3, 0x96, 0xD3, 0x22, 0xF8, 0xD3, 0xF3, 0xDC, 0x6C, 0x1E
+DATA 0xA7, 0xB4, 0xC3, 0xCF, 0x2A, 0x41, 0x4E, 0x60, 0x17, 0x87, 0xF5, 0x92, 0xD3, 0x2A, 0xF8, 0x73
+DATA 0x76, 0x49, 0xA4, 0x91, 0x68, 0xD9, 0xF7, 0x27, 0x35, 0xB0, 0xFA, 0x2E, 0x43, 0x29, 0xC7, 0x6B
+DATA 0xF5, 0x27, 0x91, 0x8D, 0xE, 0x42, 0x8, 0x4E, 0xF8, 0x15, 0x0, 0x83, 0x7F, 0x4F, 0x3C, 0x56
+DATA 0x15, 0xB4, 0xAF, 0x3D, 0xBF, 0xFD, 0x26, 0x6B, 0x60, 0xE0, 0xBF, 0x3, 0xDA, 0x26, 0x36, 0xE1
+DATA 0x57, 0x0, 0x64, 0x3F, 0x76, 0xD9, 0xFB, 0x20, 0x81, 0x57, 0x0, 0x1E, 0x75, 0x0, 0xC8, 0xA6
+DATA 0x94, 0xD5, 0xD1, 0xA6, 0x16, 0xAB, 0xB3, 0x78, 0x9E, 0x9D, 0xCB, 0x6D, 0xA9, 0xDD, 0xB4, 0xD4
+DATA 0xDA, 0x4C, 0x5A, 0x10, 0x25, 0x99, 0x3, 0x4A, 0xC8, 0x4, 0x90, 0x36, 0x25, 0xD3, 0x64, 0x5A
+DATA 0x9B, 0x94, 0x68, 0x5B, 0xE4, 0xD8, 0xB1, 0x54, 0x1E, 0xB2, 0x39, 0xDA, 0x3A, 0xE7, 0x97, 0x18
+DATA 0xC3, 0xAB, 0x9F, 0xA7, 0xDF, 0xBF, 0x3D, 0x11, 0x48, 0x6D, 0xA9, 0x49, 0xE0, 0xAD, 0xE0, 0x44
+DATA 0xED, 0x20, 0x69, 0xD3, 0x8B, 0x3, 0x8D, 0x2C, 0x4B, 0xEA, 0x0, 0xD2, 0x78, 0xF9, 0xFF, 0xD3
+DATA 0xD8, 0x52, 0x39, 0xAC, 0xB2, 0xE2, 0x88, 0x3, 0x8C, 0xEA, 0xCD, 0xBB, 0x50, 0xA6, 0x36, 0x37
+DATA 0x2F, 0x7B, 0x47, 0x58, 0xFE, 0xE7, 0x73, 0xB3, 0x8, 0xC4, 0xD6, 0x73, 0x1A, 0x1D, 0xB6, 0xC6
+DATA 0x9C, 0xED, 0x87, 0x21, 0xF6, 0x0, 0x72, 0xC1, 0x3D, 0xA, 0x51, 0xEE, 0xFB, 0xBA, 0x7B, 0xD9
+DATA 0xBF, 0xD7, 0xA6, 0xF6, 0xCC, 0x75, 0xC5, 0x8, 0xFE, 0x1C, 0xB4, 0x9F, 0x37, 0xAF, 0x0, 0xBC
+DATA 0xE7, 0x36, 0x1A, 0xFC, 0x88, 0xAF, 0xA1, 0xFE, 0x38, 0xEA, 0x3F, 0x3F, 0xF9, 0xC3, 0xB3, 0xB2
+DATA 0xF7, 0xCC, 0xB2, 0xCE, 0x5E, 0xE0, 0x97, 0x6F, 0x42, 0x8F, 0xEF, 0xAC, 0xD5, 0xFD, 0x94, 0x73
+DATA 0x7A, 0x6B, 0xF0, 0xCF, 0xF0, 0x5F, 0xEB, 0xFA, 0x97, 0xB2, 0xEF, 0x56, 0xE0, 0x4B, 0x3F, 0x33
+DATA 0x10, 0xA6, 0xED, 0x1, 0x44, 0xBB, 0x10, 0x63, 0xB1, 0x4, 0x9E, 0xFD, 0xD6, 0xB6, 0xE8, 0x27
+DATA 0x6A, 0xF0, 0x5B, 0x38, 0xF3, 0xCC, 0xB9, 0x79, 0xAD, 0x54, 0x35, 0xE3, 0x8D, 0xC8, 0xF2, 0x3F
+DATA 0x1, 0xA4, 0x8D, 0xB4, 0xD1, 0xC0, 0xB0, 0xAA, 0xE8, 0x8B, 0xCA, 0x6E, 0x6F, 0xFF, 0xBC, 0x4D
+DATA 0x54, 0xFD, 0x47, 0xD8, 0x37, 0x40, 0xF0, 0x94, 0x73, 0x76, 0x25, 0x6E, 0xE2, 0xCF, 0xA, 0xC0
+DATA 0x2A, 0x9, 0x94, 0x7D, 0x5A, 0xF4, 0x63, 0x4D, 0x54, 0xB9, 0xAC, 0x39, 0x21, 0xF8, 0xA3, 0xCE
+DATA 0xCD, 0xA, 0xCF, 0xF9, 0x7D, 0x7D, 0x2, 0xE4, 0x49, 0x40, 0x33, 0xF8, 0x89, 0x37, 0xFD, 0x22
+DATA 0x12, 0xE5, 0xFA, 0x2C, 0x72, 0x84, 0x8B, 0xF6, 0x93, 0xFE, 0x7D, 0x92, 0x3F, 0x79, 0xCF, 0x35
+DATA 0xC4, 0x29, 0x0, 0x21, 0x64, 0xD, 0xD5, 0x4, 0x90, 0xEF, 0x44, 0xE6, 0xAB, 0x1, 0x2D, 0xBB
+DATA 0x7C, 0xE3, 0x59, 0xB2, 0x72, 0xCE, 0x3B, 0xBC, 0x2D, 0x3D, 0xEA, 0x3D, 0xC8, 0x5F, 0x90, 0xD8
+DATA 0x6D, 0xAE, 0x0, 0x52, 0x22, 0x90, 0xFE, 0x31, 0x86, 0x53, 0x8C, 0xF5, 0xA4, 0x13, 0x69, 0xF0
+DATA 0xB7, 0xFA, 0x91, 0x56, 0x1, 0xE6, 0x9F, 0x6E, 0x91, 0xED, 0xA0, 0x91, 0xCD, 0xF2, 0xA5, 0x34
+DATA 0x8A, 0x95, 0xCD, 0xBC, 0x64, 0x41, 0x65, 0x80, 0x8F, 0x1, 0xB9, 0x17, 0x50, 0x27, 0xDA, 0xA9
+DATA 0xC0, 0x6A, 0x1D, 0x9F, 0xF4, 0x97, 0x7B, 0x22, 0xCD, 0x53, 0x2B, 0xCB, 0xD4, 0x3D, 0x80, 0x8
+DATA 0x99, 0x7B, 0x16, 0x91, 0x4F, 0x51, 0x50, 0x3B, 0x44, 0x4B, 0x6E, 0xA3, 0xD4, 0x6A, 0xEB, 0xA5
+DATA 0xCF, 0x20, 0xAC, 0x4E, 0xC2, 0x9, 0x64, 0x15, 0xE8, 0x9A, 0x0, 0x3C, 0x8A, 0x25, 0x56, 0x38
+DATA 0x93, 0x74, 0x5C, 0xE4, 0xC2, 0x86, 0x55, 0x3F, 0xB5, 0xEA, 0xB0, 0x5E, 0xAD, 0x39, 0x52, 0x1A
+DATA 0xFD, 0xE6, 0x15, 0x1B, 0xFA, 0xA9, 0xA4, 0xD1, 0x81, 0x95, 0xED, 0x47, 0x81, 0x6F, 0xBC, 0x6A
+DATA 0x3A, 0x7F, 0x9A, 0xC, 0x72, 0xC3, 0xE, 0x11, 0xB0, 0xF5, 0xAC, 0xC5, 0xD5, 0xCA, 0x91, 0x1B
+DATA 0x7E, 0x4F, 0x72, 0xD5, 0xDA, 0x6A, 0xFA, 0xB1, 0xBE, 0xED, 0x85, 0xF4, 0xEF, 0x51, 0xA5, 0xE9
+DATA 0x55, 0xF9, 0xA9, 0xD9, 0xE0, 0x44, 0x7C, 0x10, 0xF5, 0x53, 0x4B, 0x9F, 0x1C, 0xAD, 0xD1, 0xD0
+DATA 0xCA, 0x9C, 0xFF, 0x5E, 0xB4, 0x2, 0x40, 0xDE, 0x2E, 0x3D, 0x61, 0x5A, 0x6D, 0x5B, 0xCF, 0x5A
+DATA 0x6D, 0x6A, 0x49, 0xCB, 0x65, 0x6B, 0xED, 0x6B, 0xB5, 0xF5, 0x35, 0xF9, 0x34, 0xFD, 0xF4, 0x64
+DATA 0x7B, 0x92, 0x77, 0xE4, 0x72, 0xC9, 0xAC, 0xBB, 0x2, 0xAB, 0x56, 0x70, 0x1A, 0xDD, 0x3F, 0xE9
+DATA 0xCB, 0x5A, 0x57, 0x23, 0xCF, 0x6B, 0x64, 0xFE, 0x7A, 0xA6, 0x37, 0x88, 0x34, 0xE3, 0x3E, 0x2D
+DATA 0x9B, 0x46, 0x56, 0x2, 0x8, 0x3B, 0x1C, 0x7D, 0x9D, 0x86, 0xB5, 0xCD, 0xA3, 0x57, 0x35, 0xEE
+DATA 0xC8, 0x54, 0x45, 0x7A, 0x5E, 0x8, 0x62, 0x2, 0x88, 0x89, 0x55, 0x12, 0xA0, 0x7D, 0x7D, 0x58
+DATA 0x5E, 0x9, 0x18, 0x65, 0x87, 0x98, 0xF8, 0xD0, 0xFA, 0x4, 0x44, 0x6D, 0xCF, 0xE0, 0xF7, 0x63
+DATA 0x89, 0x32, 0xBD, 0x37, 0x9D, 0xE8, 0x24, 0x31, 0xD1, 0xDC, 0x14, 0xA5, 0x5D, 0x7D, 0x59, 0x7A
+DATA 0x49, 0xA4, 0xFC, 0x59, 0xB9, 0x2B, 0x2B, 0x31, 0x38, 0x1D, 0x65, 0x3F, 0xA4, 0x1B, 0xC1, 0xC4
+DATA 0x9E, 0xA5, 0xCA, 0x6D, 0x7D, 0x1F, 0x6A, 0x13, 0x0, 0x1D, 0x86, 0x10, 0x9C, 0x10, 0xC1, 0x62
+DATA 0xF1, 0x47, 0x44, 0xB8, 0x2, 0x20, 0x44, 0x4E, 0x98, 0x40, 0x19, 0x4D, 0x2, 0x6F, 0xAD, 0x5C
+DATA 0x23, 0xC4, 0x93, 0x70, 0x1, 0x23, 0x3D, 0x36, 0xE2, 0xD2, 0x9F, 0x10, 0x3D, 0x61, 0x83, 0x86
+DATA 0xD7, 0x8F, 0x9, 0xF1, 0x27, 0x7C, 0xE0, 0xF4, 0x12, 0x1, 0x83, 0x9F, 0x10, 0x3D, 0xFF, 0x0
+DATA 0x12, 0x8, 0xF, 0x85, 0x18, 0x6B, 0xE7, 0x8B, 0x0, 0x0, 0x0, 0x0, 0x49, 0x45, 0x4E, 0x44
+DATA 0xAE, 0x42, 0x60, 0x82
+DATAEND
+
