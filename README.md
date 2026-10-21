@@ -7,11 +7,11 @@
 
 > Compact, high-performance security tool providing hardware-accelerated 256-Bit CFB Rijndael encryption, integrated ZLIB stream compression, and SSD-friendly Win32 block streaming file shredding in a fully self-contained single executable.
 
-![Platform](sshot-1.png)
-![Language](sshot-3.png)
-![License](sshot-4.png)
-![Status](sshot-5.png)
-![Status](sshot-6.png)
+## 📸 Screenshots
+
+| Player Main HUD | Equalizer & DSP Engine | Extended Audio Settings |
+| :---: | :---: | :---: |
+| ![Main View](sshot-1.png) | ![Encryption](sshot-4.png) | ![Built-in Help](sshot-5.png) |
 
 ---
 
