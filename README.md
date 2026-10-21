@@ -9,9 +9,9 @@
 
 ## 📸 Screenshots
 
-| Player Main HUD | Equalizer & DSP Engine | Extended Audio Settings |
+| Main | Encryption | Help |
 | :---: | :---: | :---: |
-| ![Main View](sshot-1.png) | ![Encryption](sshot-4.png) | ![Built-in Help](sshot-5.png) |
+| ![Main View](sshot-1.png) | ![Encryption](sshot-3.png) | ![Built-in Help](sshot-6.png) |
 
 ---
 
