@@ -3,7 +3,7 @@
 ![Platform](https://img.shields.io/badge/Platform-Windows%207%20%7C%208%20%7C%2010%20%7C%2011-blue)
 ![Language](https://img.shields.io/badge/Language-IWBasic%202.5-orange)
 ![License](https://img.shields.io/badge/License-Freeware-green)
-![Status](https://img.shields.io/badge/Status-Single--File%20Portable-brightgreen)
+![Status](https://img.shields.io/badge/Status-Portable-brightgreen)
 
 > Compact, high-performance security tool providing hardware-accelerated 256-Bit CFB Rijndael encryption, integrated ZLIB stream compression, and SSD-friendly Win32 block streaming file shredding in a fully self-contained single executable.
 
